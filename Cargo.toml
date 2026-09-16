@@ -1,0 +1,68 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/scrigno-core",
+    "crates/scrigno-client",
+    "crates/scrigno-server",
+    "crates/scrigno-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[workspace.dependencies]
+# internal
+scrigno-core = { path = "crates/scrigno-core" }
+scrigno-client = { path = "crates/scrigno-client" }
+
+# async runtime / http
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "signal"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace", "limit"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "stream"] }
+
+# db / storage
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+# NOTE: pinned to 0.37 (not latest 0.40) because sqlx-sqlite's optional libsqlite3-sys
+# dependency caps at <0.38.0; Cargo's `links` uniqueness check applies across the whole
+# workspace graph even though this workspace never enables sqlx's "sqlite" feature, so any
+# rusqlite version pulling libsqlite3-sys >=0.38 makes the graph unresolvable.
+rusqlite = { version = "0.37", features = ["bundled"] }
+object_store = "0.14"
+
+# crypto (RustCrypto only — see docs/CRYPTO.md)
+# NOTE(m1): chacha20poly1305 0.11 exposes no crate-level "stream" feature; core-crypto must
+# resolve the correct dependency shape for the STREAM construction (aead::stream /
+# EncryptorBE32) when implementing blob::Encryptor per docs/CRYPTO.md §4.4.
+chacha20poly1305 = { version = "0.11" }
+argon2 = "0.6"
+blake3 = "1.8"
+rand = "0.9"
+zeroize = { version = "1.9", features = ["derive"] }
+secrecy = "0.10"
+subtle = "2.6"
+
+# ids / serialization
+uuid = { version = "1.26", features = ["v7", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ts-rs = "12.0"
+
+# cli / errors / logging
+clap = { version = "4.6", features = ["derive", "env"] }
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# tests
+proptest = "1.5"
+wiremock = "0.6"

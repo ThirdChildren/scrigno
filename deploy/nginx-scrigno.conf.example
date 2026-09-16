@@ -1,0 +1,47 @@
+# Scrigno vhost for the debian-docker VM. Copy to /etc/nginx/sites-available/scrigno,
+# symlink into sites-enabled, then `certbot --nginx -d scrigno.stefanoleto.xyz`.
+# Uploads are streamed straight through to the server: no buffering, generous timeouts.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name scrigno.stefanoleto.xyz;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name scrigno.stefanoleto.xyz;
+
+    # Filled in by certbot:
+    # ssl_certificate     /etc/letsencrypt/live/scrigno.stefanoleto.xyz/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/scrigno.stefanoleto.xyz/privkey.pem;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+
+    # Uncomment to allow only WireGuard peers + LAN (then the public DNS entry can stay, nothing else gets in):
+    # allow 10.20.20.0/24;      # WireGuard
+    # allow 192.168.1.0/24;     # LAN
+    # deny  all;
+
+    client_max_body_size     210m;      # SCRIGNO_MAX_BLOB_BYTES (200 MiB) + headroom
+    proxy_request_buffering  off;       # stream uploads to the server
+    proxy_buffering          off;       # stream downloads to the client
+    proxy_read_timeout       300s;
+    proxy_send_timeout       300s;
+
+    access_log /var/log/nginx/scrigno.access.log;   # contains only paths/ids/sizes, never content
+    error_log  /var/log/nginx/scrigno.error.log;
+
+    location / {
+        proxy_pass         http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+}

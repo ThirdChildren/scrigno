@@ -1,0 +1,7 @@
+# Only the Rust workspace goes into the server image.
+*
+!Cargo.toml
+!Cargo.lock
+!crates/
+!.sqlx/
+crates/**/target/

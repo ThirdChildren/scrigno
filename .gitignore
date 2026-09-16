@@ -1,0 +1,38 @@
+# Rust
+/target/
+apps/mobile/src-tauri/target/
+**/*.rs.bk
+
+# Node
+node_modules/
+apps/mobile/dist/
+.pnpm-store/
+
+# Secrets & local data — never commit
+.env
+.env.local
+.data/
+**/keystore.properties
+**/*.jks
+**/*.keystore
+**/local.properties
+
+# Android build output (keep gen/android sources, drop builds)
+apps/mobile/src-tauri/gen/android/app/build/
+apps/mobile/src-tauri/gen/android/.gradle/
+apps/mobile/src-tauri/gen/android/build/
+
+# Editors / OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+
+# Claude Code local-only state
+.claude/settings.local.json
+.claude/agent-memory-local/
+
+# Claude Code project config — kept local, not pushed
+CLAUDE.md
+.claude/agents/
+.claude/scheduled_tasks.lock

@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo:*)",
+      "Bash(pnpm:*)",
+      "Bash(just:*)",
+      "Bash(docker compose:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(curl -fsS localhost:*)",
+      "Bash(curl -fsS http://127.0.0.1:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)",
+      "Bash(docker compose down -v:*)",
+      "Read(./.env)",
+      "Read(./.env.local)",
+      "Read(./**/keystore.properties)",
+      "Read(./**/*.jks)",
+      "Read(./**/*.keystore)"
+    ]
+  }
+}

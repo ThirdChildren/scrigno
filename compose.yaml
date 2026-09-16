@@ -1,0 +1,57 @@
+# Scrigno — one compose file for dev and for the homeserver.
+#
+#   just db      → docker compose up -d postgres                  (dev: server runs natively)
+#   just up      → docker compose --profile full up -d --build    (dev "prod-like" + homeserver)
+#
+# Everything secret comes from .env (see .env.example). Ports bind to 127.0.0.1 by default;
+# set SCRIGNO_PUBLISH_HOST=0.0.0.0 in .env only when a phone on the LAN must reach the dev machine.
+
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: scrigno
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: scrigno
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"   # Postgres never leaves this machine
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scrigno -d scrigno"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  server:
+    profiles: ["full"]
+    build:
+      context: .
+      dockerfile: crates/scrigno-server/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SCRIGNO_DATABASE_URL: postgres://scrigno:${POSTGRES_PASSWORD}@postgres:5432/scrigno
+      SCRIGNO_API_TOKEN: ${SCRIGNO_API_TOKEN:?set SCRIGNO_API_TOKEN in .env (openssl rand -hex 32)}
+      SCRIGNO_BLOB_DIR: /data/blobs
+      SCRIGNO_BIND: 0.0.0.0:8787
+      SCRIGNO_MAX_BLOB_BYTES: ${SCRIGNO_MAX_BLOB_BYTES:-209715200}
+      SCRIGNO_GC_INTERVAL_SECS: ${SCRIGNO_GC_INTERVAL_SECS:-3600}
+      RUST_LOG: ${RUST_LOG:-scrigno_server=info,tower_http=info}
+    volumes:
+      - blobs:/data/blobs
+    ports:
+      - "${SCRIGNO_PUBLISH_HOST:-127.0.0.1}:${SCRIGNO_PORT:-8787}:8787"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  blobs:

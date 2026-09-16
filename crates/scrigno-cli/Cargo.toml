@@ -1,0 +1,21 @@
+[package]
+name = "scrigno-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "scrigno"
+path = "src/main.rs"
+
+[dependencies]
+scrigno-client = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
