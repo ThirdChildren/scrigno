@@ -1,16 +1,42 @@
-//! HTTP routes.
-//!
-//! M0 only has the unauthenticated healthcheck; `/v1/*` endpoints land in M2.
+//! HTTP routes: `GET /healthz` (public) plus the authenticated `/v1/*` surface from §3.
 
-use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+mod blobs;
+mod changes;
+mod docs;
+mod vault;
+
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::Json;
+use axum::routing::{delete, get, post, put};
+use axum::{Router, middleware};
 use serde::Serialize;
 use sqlx::PgPool;
 
 use crate::AppState;
+use crate::auth;
 
 pub fn router(state: AppState) -> Router {
+    let v1 = Router::new()
+        .route("/vault", get(vault::get_vault).post(vault::create_vault))
+        .route("/vault/keyslots", post(vault::add_keyslot))
+        .route("/vault/keyslots/{id}", delete(vault::delete_keyslot))
+        .route("/changes", get(changes::list_changes))
+        .route(
+            "/docs/{id}",
+            get(docs::get_doc)
+                .put(docs::put_doc)
+                .delete(docs::delete_doc),
+        )
+        .route("/blobs/{id}", put(blobs::put_blob).get(blobs::get_blob))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::require_token,
+        ));
+
     Router::new()
         .route("/healthz", get(healthz))
+        .nest("/v1", v1)
         .with_state(state)
 }
 

@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, kind, kdf, wrapped_mk, created_at FROM keyslot\n           WHERE vault_id = $1 ORDER BY created_at ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "keyslot",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "keyslot",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "kdf",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "keyslot",
+            "name": "kdf"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "wrapped_mk",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "keyslot",
+            "name": "wrapped_mk"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "keyslot",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6cc08630189cad6917074681aabf591db474829eaf755682a7402734fc2c2138"
+}

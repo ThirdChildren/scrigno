@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE blob SET created_at = now() - interval '48 hours' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fee1d554a3bca49fe6afd37b214dd39170fce2ebd3b363a0ed8e3cd9491d09ad"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM keyslot WHERE id = $1 AND vault_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eed7089d30e4bd13a6d294d9363590e5f5f935acf8edaf7adc547f402229e49a"
+}

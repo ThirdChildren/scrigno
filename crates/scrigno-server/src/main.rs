@@ -1,25 +1,17 @@
-//! Scrigno server — dumb, honest ciphertext storage.
-//!
-//! M0: config loading, tracing, DB connection + migrations, and the unauthenticated `/healthz`
-//! route. Everything else (auth, `/v1/*`, blob GC) lands in later milestones.
-
-mod config;
-mod routes;
+//! Scrigno server binary — see `src/lib.rs` for the crate-level overview.
 
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::time::Duration;
 
+use object_store::ObjectStore;
+use object_store::local::LocalFileSystem;
+use scrigno_server::config::Config;
+use scrigno_server::{AppState, auth, gc, routes};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
-
-use crate::config::Config;
-
-/// Shared application state, cloned into each request handler.
-#[derive(Clone)]
-pub struct AppState {
-    pub db: PgPool,
-}
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -43,15 +35,28 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(bind = %config.bind, "starting scrigno-server");
 
-    let pool = PgPoolOptions::new()
+    let pool: PgPool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&config.database_url)
         .await?;
 
     sqlx::migrate!("./migrations").run(&pool).await?;
 
-    let state = AppState { db: pool };
-    let app = routes::router(state).layer(TraceLayer::new_for_http());
+    tokio::fs::create_dir_all(&config.blob_dir).await?;
+    let store: Arc<dyn ObjectStore> = Arc::new(LocalFileSystem::new_with_prefix(&config.blob_dir)?);
+
+    let state = AppState {
+        db: pool,
+        store,
+        api_token: Arc::from(config.api_token.as_bytes()),
+        max_blob_bytes: config.max_blob_bytes,
+    };
+
+    gc::spawn(state.clone(), Duration::from_secs(config.gc_interval_secs));
+
+    let app = routes::router(state)
+        .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(auth::request_id));
 
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     tracing::info!(bind = %config.bind, "listening");

@@ -76,7 +76,14 @@ Blob storage: `object_store::local::LocalFileSystem` rooted at `SCRIGNO_BLOB_DIR
 - Auth: `Authorization: Bearer <SCRIGNO_API_TOKEN>` on every route except `/healthz`. Missing or
   wrong → `401` with empty body. Constant-time compare.
 - JSON bodies `application/json`; blobs `application/octet-stream`.
-- Errors: `{ "error": { "code": "…", "message": "…" } }`; `code` is stable and machine-readable.
+- Errors: `{ "error": { "code": "…", "message": "…" } }`; `code` is stable and machine-readable,
+  with one documented exception: `412 version_mismatch` returns the current `DocumentRecord`
+  itself as the body (not wrapped in the error envelope), so a conflicting client can act on it
+  without a second round trip. Codes used: the per-endpoint ones in the table below, plus these
+  generic ones any route can return: `unauthorized` (401), `not_found` (404, e.g. `GET`/`DELETE`
+  on an id that has never existed), `bad_request` (400, malformed header/body/query),
+  `range_not_satisfiable` (416, `GET /v1/blobs/{id}` with an out-of-bounds `Range`),
+  `payload_too_large` (413), `internal_error` (500, never includes SQL/paths/internal detail).
 - Limits: JSON bodies 1 MiB; blob upload `SCRIGNO_MAX_BLOB_BYTES` (default 200 MiB) → `413`.
 - Base64 in JSON is standard alphabet with padding.
 
@@ -96,11 +103,21 @@ Blob storage: `object_store::local::LocalFileSystem` rooted at `SCRIGNO_BLOB_DIR
 
 ```ts
 type Vault = { id: string; created_at: string; keyslots: Keyslot[] };
+type Keyslot = {
+  id: string; kind: "passphrase" | "recovery"; kdf: KdfParams;
+  wrapped_mk: string /* base64 */; created_at: string;
+};
 type DocumentRecord = {
   id: string; version: number; blob_id: string | null; blob_size: number;
   enc_meta: string /* base64 */; deleted: boolean; server_seq: number; updated_at: string;
 };
 ```
+
+`POST /v1/vault` and `POST /v1/vault/keyslots` accept a `Keyslot`-shaped body (`created_at` is
+ignored if present -- the server always sets it). `id` is client-generated like every other id.
+The server validates `Keyslot`/`DocumentRecord` fields only for shape (valid uuid/base64/non-empty,
+`kind` one of the two allowed values, `kdf` is a JSON object) and never interprets `kdf`,
+`wrapped_mk` or `enc_meta` beyond that -- they are opaque to it by design.
 
 Write order on the client is always **blob first, then document**, so a document never points at
 a missing blob. Interrupted uploads leave an orphan blob that GC collects.
@@ -192,8 +209,9 @@ Types shared with TS (`ts-rs`): `DocSummary`, `DocMeta`, `SyncReport`, `Settings
 
 ## 7. Configuration
 
-Server (env, all prefixed `SCRIGNO_`): `DATABASE_URL`, `API_TOKEN`, `BLOB_DIR`, `BIND`
-(default `0.0.0.0:8787`), `MAX_BLOB_BYTES`, `GC_INTERVAL_SECS`. Plus `RUST_LOG`.
+Server (env, all prefixed `SCRIGNO_`): `DATABASE_URL`, `API_TOKEN` (required, rejected at startup
+if shorter than 32 characters), `BLOB_DIR`, `BIND` (default `0.0.0.0:8787`), `MAX_BLOB_BYTES`
+(default 200 MiB), `GC_INTERVAL_SECS` (default 3600). Plus `RUST_LOG`.
 
 Client/app: `server_url` and `token` entered once in the setup screen, stored in the SQLite `kv`
 table (token) and Stronghold (MK). Dev defaults suggested by the UI: `http://127.0.0.1:8787` on

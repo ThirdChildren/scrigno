@@ -2130,10 +2130,13 @@ name = "scrigno-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
+ "futures-util",
  "object_store",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "subtle",
  "thiserror",

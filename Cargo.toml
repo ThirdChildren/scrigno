@@ -58,6 +58,12 @@ uuid = { version = "1.26", features = ["v7", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ts-rs = "12.0"
+# sha2: RustCrypto SHA-256 of ciphertext (docs/CRYPTO.md §4.4 ETag/integrity check), needed by
+# both scrigno-server (compute on upload) and scrigno-client (verify on download).
+sha2 = "0.10"
+# base64: docs/ARCHITECTURE.md §3 ("Base64 in JSON is standard alphabet with padding") for
+# opaque enc_meta/wrapped_mk bytea transport; needed by both server and client.
+base64 = "0.22"
 
 # cli / errors / logging
 clap = { version = "4.6", features = ["derive", "env"] }

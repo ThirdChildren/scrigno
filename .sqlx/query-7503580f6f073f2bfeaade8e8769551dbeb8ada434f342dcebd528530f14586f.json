@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n        SELECT b.id, b.vault_id\n        FROM blob b\n        WHERE NOT EXISTS (\n            SELECT 1 FROM document d WHERE d.blob_id = b.id AND d.deleted = false\n        )\n        AND b.created_at < now() - interval '24 hours'\n        FOR UPDATE SKIP LOCKED\n        ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "blob",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "vault_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "blob",
+            "name": "vault_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7503580f6f073f2bfeaade8e8769551dbeb8ada434f342dcebd528530f14586f"
+}
