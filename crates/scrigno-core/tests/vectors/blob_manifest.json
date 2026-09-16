@@ -1,0 +1,12 @@
+{
+  "description": "Fixed 3-segment Blob test vector (docs/CRYPTO.md §4.4 and §8): 2 MiB + 5 B of plaintext, split into 2 full 1 MiB segments plus one short (5 B) final segment. The ciphertext lives alongside this manifest in ciphertext_file (too large to inline as hex). All byte fields here are lowercase hex. Generated with blob::Encryptor::new_for_test, a #[cfg(test)]-only constructor that pins the DEK and both nonces; production code has no way to supply either (docs/CRYPTO.md §8).",
+  "master_key_hex": "6666666666666666666666666666666666666666666666666666666666666666",
+  "doc_id": "44444444-4444-7444-8444-444444444444",
+  "dek_hex": "7777777777777777777777777777777777777777777777777777777777777777",
+  "wrapped_dek_nonce_hex": "888888888888888888888888888888888888888888888888",
+  "stream_nonce_prefix_hex": "99999999999999999999999999999999999999",
+  "plaintext_len": 2097157,
+  "plaintext_pattern": "byte i of the plaintext equals i % 256",
+  "ciphertext_file": "blob_3_segments.bin",
+  "ciphertext_len": 2097302
+}

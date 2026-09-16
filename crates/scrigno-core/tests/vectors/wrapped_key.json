@@ -1,0 +1,9 @@
+{
+  "description": "Fixed WrappedKey test vector (docs/CRYPTO.md §4.1, MK-under-KEK AAD variant). All byte fields are lowercase hex. Generated with wrap::wrap_mk_for_test, a #[cfg(test)]-only constructor that pins the nonce; production code has no way to supply one (docs/CRYPTO.md §8).",
+  "kek_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "vault_id": "11111111-1111-7111-8111-111111111111",
+  "keyslot_id": "22222222-2222-7222-8222-222222222222",
+  "master_key_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+  "nonce_hex": "333333333333333333333333333333333333333333333333",
+  "wrapped_key_hex": "01333333333333333333333333333333333333333333333333988655ab5a492115a0b60a86eccfdcf4a9655edc6e9156aec946b458b235dd6381b4ee23e7d92100f9eefe1ec3ede22f"
+}

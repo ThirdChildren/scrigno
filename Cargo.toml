@@ -40,10 +40,12 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 object_store = "0.14"
 
 # crypto (RustCrypto only — see docs/CRYPTO.md)
-# NOTE(m1): chacha20poly1305 0.11 exposes no crate-level "stream" feature; core-crypto must
-# resolve the correct dependency shape for the STREAM construction (aead::stream /
-# EncryptorBE32) when implementing blob::Encryptor per docs/CRYPTO.md §4.4.
+# The STREAM construction (EncryptorBE32/DecryptorBE32) lives in the separate `aead-stream`
+# crate as of aead 0.6 / chacha20poly1305 0.11 (it used to be a "stream" feature on `aead`
+# itself pre-0.6; that feature no longer exists).
 chacha20poly1305 = { version = "0.11" }
+aead = "0.6"
+aead-stream = { version = "0.6", features = ["alloc"] }
 argon2 = "0.6"
 blake3 = "1.8"
 rand = "0.9"

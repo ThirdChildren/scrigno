@@ -1,0 +1,9 @@
+{
+  "description": "Fixed EncMeta test vector (docs/CRYPTO.md §4.3). All byte fields are lowercase hex. Generated with meta::seal_for_test, a #[cfg(test)]-only constructor that pins the nonce; production code has no way to supply one (docs/CRYPTO.md §8).",
+  "master_key_hex": "4444444444444444444444444444444444444444444444444444444444444444",
+  "doc_id": "33333333-3333-7333-8333-333333333333",
+  "doc_version": 7,
+  "nonce_hex": "555555555555555555555555555555555555555555555555",
+  "meta_json": "{\"v\":1,\"title\":\"Carta d'identità\",\"tags\":[\"identità\",\"personale\"],\"note\":\"scade 2031\",\"mime\":\"application/pdf\",\"size\":183422,\"content_hash\":\"deadbeef\",\"original_name\":\"scan.pdf\",\"created_at\":\"2026-01-01T00:00:00Z\",\"thumb\":null}",
+  "enc_meta_hex": "01555555555555555555555555555555555555555555555555765adcfc765af44f49ce4ff714683125bc7e6ee1d6f4aeeebaa47329f90778c34f69e477e00840489bb7303f000fc4b9e172f7fc04dab2aee11e5617728f1080c049c3b74acd564f778cf75f7b8a4aa44f65a95f0824608e23030dcb8a8b807278a8d88ffeb94e4699676437f46633c3b4a8f62393f538023d8dea3986edc23bd719d1f533f548c1fc2e9a08d78158385461f43cb9e71d315c50486ac6388fb461e01f2608c6db061135485d2520c684a21b8f55b6378aee915ca12d9b697b4f5bba0e940ed46bc40bbf6b8c11b81451e625046290cbc689f16cc53c6d5f8f618e62bd0fd28a089de821906e6b901635bcdd305a3c"
+}

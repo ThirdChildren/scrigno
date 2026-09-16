@@ -31,6 +31,7 @@ apps/mobile/src-tauri/gen/android/build/
 # Claude Code local-only state
 .claude/settings.local.json
 .claude/agent-memory-local/
+.claude/agent-memory/
 
 # Claude Code project config — kept local, not pushed
 CLAUDE.md

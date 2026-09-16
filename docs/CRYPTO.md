@@ -9,7 +9,7 @@ secret, **DEK** per-document data key, **AAD** additional authenticated data.
 | Purpose | Primitive | Crate |
 |---|---|---|
 | AEAD | XChaCha20-Poly1305 (24-byte nonce, 16-byte tag) | `chacha20poly1305` |
-| Chunked AEAD | STREAM construction, `aead::stream::EncryptorBE32` / `DecryptorBE32` over XChaCha20-Poly1305 | `chacha20poly1305` with `stream` feature |
+| Chunked AEAD | STREAM construction, `EncryptorBE32` / `DecryptorBE32` over XChaCha20-Poly1305 | `chacha20poly1305` + `aead-stream` (the STREAM impl moved out of `aead`'s own `stream` feature into this sibling RustCrypto crate as of `aead` 0.6) |
 | Password KDF | Argon2id | `argon2` |
 | Hash | BLAKE3 (plaintext content hash, client-side dedup/integrity) | `blake3` |
 | Randomness | `OsRng` only | `rand` / `rand_core` |
@@ -129,7 +129,11 @@ sees an image.
 ```
 
 Segments: plaintext is split into chunks of exactly **1 MiB (1 048 576 B)**, last chunk may be
-shorter (may be 0 B for an empty file: still emit one final empty segment). Each segment is
+shorter, including 0 B — this happens for a genuinely empty file, and also whenever the plaintext
+length is an exact multiple of 1 MiB (a streaming writer cannot know a full chunk was the last one
+without an EOF signal, so it always emits a trailing empty final segment in that case; a streaming
+reader must not assume a declared segment count and instead detect the true end by EOF). Each
+segment is
 `XChaCha20-Poly1305` over the chunk with the STREAM nonce (`prefix || counter u32 BE || last_flag`)
 as implemented by `EncryptorBE32`; ciphertext length = chunk + 16.
 
