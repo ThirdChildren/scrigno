@@ -87,5 +87,8 @@ cli:
     cargo build -p scrigno-cli
 
 # End-to-end scenario driven by the CLI against compose (available from milestone M3)
-e2e: db
+# scripts/e2e.sh brings up the full stack itself (Postgres + server, via `docker compose
+# --profile full`, i.e. what `just up` does) and waits for /healthz, so no `db`/`up`
+# prerequisite is declared here — running it directly (`./scripts/e2e.sh`) works the same way.
+e2e:
     ./scripts/e2e.sh

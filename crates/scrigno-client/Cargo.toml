@@ -10,8 +10,10 @@ workspace = true
 
 [dependencies]
 scrigno-core = { workspace = true }
-tokio = { workspace = true }
-reqwest = { workspace = true }
+tokio = { workspace = true, features = ["fs", "time"] }
+# "query": RequestBuilder::query() for `GET /v1/changes?since=&limit=` (docs/ARCHITECTURE.md
+# §3); not on by default in reqwest's minimal feature set the workspace pins.
+reqwest = { workspace = true, features = ["query"] }
 rusqlite = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
@@ -19,6 +21,28 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 ts-rs = { workspace = true, optional = true }
+# secrecy: passphrase/token must never be a plain String that could be accidentally
+# Debug-printed or logged (CLAUDE.md "never log ... passphrases"); already a scrigno-core dep.
+secrecy = { workspace = true }
+# sha2: verify the server's ETag (sha256 of ciphertext) while streaming a blob download
+# (docs/CRYPTO.md §4.4); already promoted to workspace deps in M2 for this exact purpose.
+sha2 = { workspace = true }
+# base64: encode/decode the JSON `enc_meta`/`wrapped_mk` fields exchanged with the server
+# (docs/ARCHITECTURE.md §3: "Base64 in JSON is standard alphabet with padding").
+base64 = { workspace = true }
+# blake3: client-side plaintext content hash stored in DocMeta.content_hash
+# (docs/CRYPTO.md §4.3); already a workspace dep for scrigno-core's own use.
+blake3 = { workspace = true }
+# futures-util: drains reqwest's streamed request/response bodies one chunk at a time while
+# hashing (blob upload/download), without ever buffering the whole blob in memory. Same
+# dependency/justification scrigno-server already uses for the mirror-image server-side code
+# (already a transitive dependency of axum/reqwest; this just names it for direct use).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# time: RFC3339 "now" timestamps for local document rows and the conflict-copy title suffix
+# (docs/ARCHITECTURE.md §4/§5). Not promoted to the workspace: scrigno-server already gets
+# RFC3339 formatting for free from sqlx's chrono feature, but scrigno-client has no chrono
+# dependency of its own, so this crate needs its own minimal formatter.
+time = { version = "0.3", default-features = false, features = ["formatting"] }
 
 [features]
 ts-export = ["dep:ts-rs"]

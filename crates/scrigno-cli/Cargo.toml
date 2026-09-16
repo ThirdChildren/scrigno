@@ -14,8 +14,21 @@ path = "src/main.rs"
 
 [dependencies]
 scrigno-client = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 clap = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# secrecy: passphrase/token must travel as SecretString end-to-end (scrigno-client's own API
+# requires it), never a plain String a stray Debug/log could print. Already a scrigno-core dep.
+secrecy = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+# rpassword: terminal-echo-suppressing passphrase prompt. Small, no crypto of its own, just
+# termios manipulation — nothing else in the workspace provides this, and the CLI must never
+# accept a passphrase as a positional/visible argument (CLAUDE.md's CLI brief).
+rpassword = "7.5"
+# zeroize: wrap intermediate String buffers (file contents, prompt results) in Zeroizing so
+# passphrase/token material is wiped on drop, including on the mismatch early-return path.
+# Already a workspace dep (scrigno-core).
+zeroize = { workspace = true }

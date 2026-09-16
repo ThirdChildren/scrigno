@@ -4,6 +4,7 @@
 use argon2::{Algorithm, Argon2, Params, Version};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::codec::{base64_decode, base64_encode};
 use crate::error::Error;
@@ -151,15 +152,20 @@ pub fn derive_kek(passphrase: &SecretString, params: &KdfParams) -> Result<Kek, 
         .map_err(|_| Error::InvalidKdfParams)?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params);
 
-    let mut out = [0u8; KEK_LEN];
+    // Zeroizing from the moment Argon2 fills it: `out` is `[u8; KEK_LEN]`, which is `Copy`, so
+    // without this wrapper the raw KEK bytes handed to `Kek::from_bytes` by value would leave an
+    // unzeroized copy sitting in this stack frame after the function returns (the same buffer-
+    // hygiene bug fixed in `wrap.rs`/`meta.rs`/`blob.rs` after the M1 review). `Zeroizing::drop`
+    // scrubs this frame's copy on every exit path, including the early `?` return above.
+    let mut out = Zeroizing::new([0u8; KEK_LEN]);
     argon2
         .hash_password_into(
             passphrase.expose_secret().as_bytes(),
             params.salt.as_bytes(),
-            &mut out,
+            &mut *out,
         )
         .map_err(|_| Error::Internal)?;
-    Ok(Kek::from_bytes(out))
+    Ok(Kek::from_bytes(*out))
 }
 
 #[cfg(test)]
