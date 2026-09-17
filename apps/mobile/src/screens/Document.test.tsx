@@ -27,13 +27,13 @@ function makeMeta(overrides: Partial<DocMeta> = {}): DocMeta {
   };
 }
 
-function renderDocument(id = "doc-1") {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <QueryClientProvider client={queryClient}>
+function renderDocument(id = "doc-1", queryClient?: QueryClient) {
+  const client = queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return { ...render(
+    <QueryClientProvider client={client}>
       <Document id={id} onBack={() => {}} />
     </QueryClientProvider>,
-  );
+  ), queryClient: client };
 }
 
 describe("Document", () => {
@@ -62,6 +62,34 @@ describe("Document", () => {
     });
 
     renderDocument();
+
+    expect(await screen.findByDisplayValue(meta.title)).toBeInTheDocument();
+    expect(screen.getByDisplayValue("viaggi, identità")).toBeInTheDocument();
+    expect(screen.getByDisplayValue(meta.note)).toBeInTheDocument();
+  });
+
+  // Regression test for the revisit-specific variant of the field-blanking bug: TanStack Query
+  // serves an already-fetched query's data synchronously on mount, so on a *second* mount of the
+  // same document id (open doc -> back -> reopen, within one session, same QueryClient) the seed
+  // logic previously ran with `metaQuery.data` already truthy on render #1 — which broke the old
+  // "does metaQuery.data differ from itself" seeding trigger. A single fresh-mount test (above)
+  // cannot catch this: it only ever produces the "genuine cache miss" path.
+  vitestIt("prefills title/tags/note again after remounting for an already-cached document (revisit)", async () => {
+    const meta = makeMeta();
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "doc_get_meta") return Promise.resolve(meta);
+      if (cmd === "docs_list") return Promise.resolve([]);
+      if (cmd === "doc_open") return Promise.resolve(new ArrayBuffer(8));
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const first = renderDocument("doc-1");
+    await screen.findByDisplayValue(meta.title);
+    first.unmount();
+
+    // Remount for the SAME id against the SAME QueryClient instance, so the query cache is
+    // genuinely shared across mounts exactly like it is within one app session.
+    renderDocument("doc-1", first.queryClient);
 
     expect(await screen.findByDisplayValue(meta.title)).toBeInTheDocument();
     expect(screen.getByDisplayValue("viaggi, identità")).toBeInTheDocument();

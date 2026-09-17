@@ -35,10 +35,30 @@ export function Document({ id, onBack }: { id: string; onBack: () => void }) {
   const [tags, setTags] = useState("");
   const [note, setNote] = useState("");
   // "Adjusting state when a prop changes" (react.dev), done during render rather than in an
-  // effect: seeds the editable fields once per fetch of `metaQuery.data`.
+  // effect: tracks the last-loaded/last-saved metadata for dirty-tracking below. Updated
+  // whenever `metaQuery.data` gets a new reference — a fresh fetch, or the refetch after a save.
   const [loadedMeta, setLoadedMeta] = useState(metaQuery.data);
   if (metaQuery.data && metaQuery.data !== loadedMeta) {
     setLoadedMeta(metaQuery.data);
+  }
+
+  // Seeds the editable fields exactly once per mount of a given document `id`. This must NOT
+  // reuse the "does metaQuery.data differ from loadedMeta" check above as its trigger: on a
+  // revisit of a document already fetched earlier this session, TanStack Query serves the
+  // cached result synchronously on the very first render, so `metaQuery.data` and the
+  // `useState(metaQuery.data)` initializer above capture the identical reference on render #1 —
+  // "differs" is false from the start, and the fields would never get seeded (fields stay blank
+  // forever even though correct data is sitting in `metaQuery.data`). `seededId` instead starts
+  // at `null` via its own `useState(null)` initializer — never tied to `metaQuery.data` — so it
+  // can never accidentally equal a real `id` on render #1. The first render at which data is
+  // available — whether a synchronous cache hit or a later async fetch — always seeds, and it
+  // re-seeds if `id` itself ever changes without a full unmount. (A ref would do the same job,
+  // but reading/writing a ref's `.current` during render is not allowed here — see
+  // react-hooks/refs — so this uses the same "adjust state during render" pattern as
+  // `loadedMeta` above instead.)
+  const [seededId, setSeededId] = useState<string | null>(null);
+  if (metaQuery.data && seededId !== id) {
+    setSeededId(id);
     setTitle(metaQuery.data.title);
     setTags(metaQuery.data.tags.join(", "));
     setNote(metaQuery.data.note);

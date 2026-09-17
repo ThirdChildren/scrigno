@@ -18,11 +18,25 @@ export function Settings({ onBack }: { onBack: () => void }) {
   const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
 
   // "Adjusting state when a prop changes" (react.dev), done during render rather than in an
-  // effect: initializes the editable fields from the fetched settings exactly once per fetch,
-  // without an extra render/effect round-trip.
+  // effect: tracks the last-loaded/last-saved settings for dirty-tracking below. Updated
+  // whenever `settingsQuery.data` gets a new reference — a fresh fetch, or the value written
+  // back by `saveMutation.onSuccess`.
   const [loadedSettings, setLoadedSettings] = useState(settingsQuery.data);
   if (settingsQuery.data && settingsQuery.data !== loadedSettings) {
     setLoadedSettings(settingsQuery.data);
+  }
+
+  // Seeds the editable fields exactly once per mount. Must NOT reuse the "differs from
+  // loadedSettings" check above as its trigger: on a revisit of Settings already fetched earlier
+  // this session, TanStack Query serves the cached result synchronously on the very first
+  // render, so `settingsQuery.data` and the `useState(settingsQuery.data)` initializer above
+  // capture the identical reference on render #1 — "differs" is false from the start, and the
+  // fields would never get seeded. See the identical fix and rationale in `Document.tsx` (this
+  // uses a `useState` flag rather than a ref for the same reason noted there: refs can't be
+  // read/written during render under this project's lint rules).
+  const [seeded, setSeeded] = useState(false);
+  if (settingsQuery.data && !seeded) {
+    setSeeded(true);
     setAutoLockMinutes(settingsQuery.data.auto_lock_minutes);
     setCacheLimitMb(Number(settingsQuery.data.cache_limit_mb));
   }
