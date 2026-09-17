@@ -11,7 +11,9 @@ import {
   docsList,
 } from "../lib/ipc";
 import { useObjectUrl } from "../lib/useObjectUrl";
+import { useSavedFlash } from "../lib/useSavedFlash";
 import { PdfViewer } from "../components/PdfViewer";
+import { CheckIcon } from "../components/CheckIcon";
 
 function parseTags(raw: string): string[] {
   return raw
@@ -67,10 +69,10 @@ export function Document({ id, onBack }: { id: string; onBack: () => void }) {
   const savedTags = loadedMeta ? loadedMeta.tags.join(", ") : "";
   const savedNote = loadedMeta?.note ?? "";
   const isDirty = title !== savedTitle || tags !== savedTags || note !== savedNote;
-  // Shown once a save succeeds and hidden again the moment the user changes anything (`isDirty`
-  // flips back to `true`) — no separate timer needed, `updateMutation.isSuccess` only resets
-  // when a new save starts.
-  const showSaved = updateMutation.isSuccess && !isDirty;
+  // Briefly swaps the Save button's own content to a checkmark + "Salvato" instead of a separate
+  // banner; clears itself after a couple of seconds or immediately if the user starts editing
+  // again (see `useSavedFlash`).
+  const showSaved = useSavedFlash(updateMutation.isSuccess, isDirty);
 
   const deleteMutation = useMutation({
     mutationFn: () => docDelete(id),
@@ -161,18 +163,21 @@ export function Document({ id, onBack }: { id: string; onBack: () => void }) {
             {errorMessage(updateMutation.error)}
           </p>
         )}
-        {showSaved && (
-          <p role="alert" className="text-sm text-emerald-400">
-            {it.common.saved}
-          </p>
-        )}
 
         <button
           type="submit"
           disabled={title.trim() === "" || updateMutation.isPending || !isDirty}
-          className="min-h-11 rounded-md bg-emerald-600 px-4 py-3 font-medium text-white disabled:opacity-40"
+          aria-live="polite"
+          className="flex min-h-11 items-center justify-center gap-2 rounded-md bg-emerald-600 px-4 py-3 font-medium text-white disabled:opacity-40"
         >
-          {it.common.save}
+          {showSaved ? (
+            <>
+              <CheckIcon className="h-5 w-5" />
+              {it.common.saved}
+            </>
+          ) : (
+            it.common.save
+          )}
         </button>
       </form>
 

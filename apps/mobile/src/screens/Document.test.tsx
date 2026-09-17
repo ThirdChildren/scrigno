@@ -128,6 +128,8 @@ describe("Document", () => {
     await waitFor(() => {
       expect(saveButton).toBeDisabled();
     });
-    expect(await screen.findByRole("alert")).toHaveTextContent(it.common.saved);
+    // The Save button's own content swaps to the checkmark + "Salvato" confirmation instead of a
+    // separate alert banner.
+    expect(saveButton).toHaveTextContent(it.common.saved);
   });
 });

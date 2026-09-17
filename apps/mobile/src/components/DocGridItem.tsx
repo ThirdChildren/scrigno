@@ -10,7 +10,7 @@ export function DocGridItem({ doc, onOpen }: { doc: DocSummary; onOpen: (id: str
       className="flex flex-col gap-1 rounded-md p-1 text-left"
     >
       <div className="relative">
-        <DocThumbnail id={doc.id} title={doc.title} mime={doc.mime} contentHash={doc.content_hash} />
+        <DocThumbnail id={doc.id} title={doc.title} />
         {doc.dirty && (
           <span className="absolute right-1 top-1 rounded bg-amber-600 px-1.5 py-0.5 text-[10px] text-white">
             {it.vault.dirtyBadge}

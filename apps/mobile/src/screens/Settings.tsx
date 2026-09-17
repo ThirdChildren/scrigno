@@ -4,6 +4,8 @@ import { it } from "../i18n/it";
 import { errorMessage } from "../i18n/errors";
 import { settingsGet, settingsSet, vaultAddRecoveryCode, vaultLock } from "../lib/ipc";
 import { RecoveryCodeReveal } from "../components/RecoveryCodeReveal";
+import { CheckIcon } from "../components/CheckIcon";
+import { useSavedFlash } from "../lib/useSavedFlash";
 import pkg from "../../package.json";
 
 /** Settings screen (`docs/ROADMAP.md` M4). "Cambia passphrase" is a documented stub this
@@ -41,7 +43,7 @@ export function Settings({ onBack }: { onBack: () => void }) {
   const savedAutoLockMinutes = loadedSettings?.auto_lock_minutes ?? autoLockMinutes;
   const savedCacheLimitMb = loadedSettings ? Number(loadedSettings.cache_limit_mb) : cacheLimitMb;
   const isDirty = autoLockMinutes !== savedAutoLockMinutes || cacheLimitMb !== savedCacheLimitMb;
-  const showSaved = saveMutation.isSuccess && !isDirty;
+  const showSaved = useSavedFlash(saveMutation.isSuccess, isDirty);
 
   const recoveryMutation = useMutation({
     mutationFn: vaultAddRecoveryCode,
@@ -107,7 +109,11 @@ export function Settings({ onBack }: { onBack: () => void }) {
         </p>
       )}
       {showSaved && (
-        <p role="alert" className="text-sm text-emerald-400">
+        <p
+          aria-live="polite"
+          className="inline-flex w-fit items-center gap-1.5 rounded-full border border-emerald-800 bg-emerald-950 px-2.5 py-1 text-xs text-emerald-400"
+        >
+          <CheckIcon className="h-3.5 w-3.5" />
           {it.common.saved}
         </p>
       )}
