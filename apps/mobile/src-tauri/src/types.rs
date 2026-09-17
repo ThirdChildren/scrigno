@@ -66,6 +66,13 @@ pub struct Settings {
     pub cache_limit_mb: i64,
     /// The server URL entered at setup. Read-only after `vault_create`/`vault_join`.
     pub server_url: String,
+    /// Whether quick unlock (`docs/CRYPTO.md §5.2`, `crate::quick_unlock`) is currently enrolled
+    /// on this device. Always `false` on desktop (no quick-unlock concept there — see
+    /// `commands::vault_unlock_quick`'s desktop stub); reflects real enrollment
+    /// (`quick_unlock::is_enabled`) on Android. Read-only: there is no `settings_set` field for
+    /// this — enrollment/un-enrollment go through `vault_enable_quick_unlock`/
+    /// `vault_forget_quick_unlock` instead.
+    pub quick_unlock_enabled: bool,
 }
 
 #[cfg(test)]
@@ -78,6 +85,7 @@ mod tests {
             auto_lock_minutes: 7,
             cache_limit_mb: 1024,
             server_url: "http://127.0.0.1:8787".to_string(),
+            quick_unlock_enabled: true,
         };
         let json = serde_json::to_string(&settings).expect("serialize");
         let back: Settings = serde_json::from_str(&json).expect("deserialize");

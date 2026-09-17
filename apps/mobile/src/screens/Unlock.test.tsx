@@ -10,6 +10,15 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 const mockInvoke = vi.mocked(invoke);
 
+function settingsResponse(quickUnlockEnabled: boolean) {
+  return {
+    auto_lock_minutes: 5,
+    cache_limit_mb: 512n,
+    server_url: "http://127.0.0.1:8787",
+    quick_unlock_enabled: quickUnlockEnabled,
+  };
+}
+
 /** Mounts a dummy `vaultStatus` observer alongside `Unlock` so that the query client's
  * `invalidateQueries` call on unlock success has an active subscriber to trigger a real refetch,
  * the same way `App.tsx`'s routing query would. */
@@ -34,6 +43,10 @@ describe("Unlock", () => {
   });
 
   vitestIt("renders a passphrase field and a submit button", () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "settings_get") return Promise.resolve(settingsResponse(false));
+      return Promise.resolve("locked");
+    });
     renderUnlock();
     expect(screen.getByLabelText(it.unlock.passphrase)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: it.unlock.submit })).toBeInTheDocument();
@@ -43,6 +56,7 @@ describe("Unlock", () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "vault_unlock") return Promise.resolve(undefined);
       if (cmd === "vault_status") return Promise.resolve("unlocked");
+      if (cmd === "settings_get") return Promise.resolve(settingsResponse(false));
       return Promise.reject(new Error(`unexpected command ${cmd}`));
     });
     const user = userEvent.setup();
@@ -63,6 +77,7 @@ describe("Unlock", () => {
       if (cmd === "vault_unlock") {
         return Promise.reject({ code: "wrong_passphrase", message: "wrong passphrase" });
       }
+      if (cmd === "settings_get") return Promise.resolve(settingsResponse(false));
       return Promise.resolve("locked");
     });
     const user = userEvent.setup();
@@ -74,10 +89,59 @@ describe("Unlock", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Passphrase errata");
   });
 
+  vitestIt("does not show the biometric button when quick unlock isn't enrolled", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "settings_get") return Promise.resolve(settingsResponse(false));
+      return Promise.resolve("locked");
+    });
+    renderUnlock();
+
+    await screen.findByLabelText(it.unlock.passphrase);
+    expect(screen.queryByRole("button", { name: it.unlock.quickUnlock })).not.toBeInTheDocument();
+  });
+
+  vitestIt("shows a biometric quick-unlock button when enrolled and calls vault_unlock_quick with an Italian reason", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "vault_unlock_quick") return Promise.resolve(undefined);
+      if (cmd === "vault_status") return Promise.resolve("unlocked");
+      if (cmd === "settings_get") return Promise.resolve(settingsResponse(true));
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+    const user = userEvent.setup();
+    renderUnlock();
+
+    await user.click(await screen.findByRole("button", { name: it.unlock.quickUnlock }));
+
+    await waitFor(() => {
+      expect(mockInvoke).toHaveBeenCalledWith("vault_unlock_quick", {
+        reason: it.unlock.quickUnlockReason,
+      });
+    });
+  });
+
+  vitestIt("hides the quick-unlock button once it reports quick_unlock_unavailable, even though enrolled", async () => {
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "vault_unlock_quick") {
+        return Promise.reject({ code: "quick_unlock_unavailable", message: "unavailable" });
+      }
+      if (cmd === "settings_get") return Promise.resolve(settingsResponse(true));
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+    const user = userEvent.setup();
+    renderUnlock();
+
+    await user.click(await screen.findByRole("button", { name: it.unlock.quickUnlock }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: it.unlock.quickUnlock })).not.toBeInTheDocument();
+    });
+  });
+
   vitestIt("triggers a vault_status refetch after a successful unlock", async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === "vault_unlock") return Promise.resolve(undefined);
       if (cmd === "vault_status") return Promise.resolve("unlocked");
+      if (cmd === "settings_get") return Promise.resolve(settingsResponse(false));
       return Promise.reject(new Error(`unexpected command ${cmd}`));
     });
     const user = userEvent.setup();

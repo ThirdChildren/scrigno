@@ -1,11 +1,12 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { it } from "../i18n/it";
 import { errorMessage } from "../i18n/errors";
 import { docsList, syncNow, vaultLock, type DocSummary } from "../lib/ipc";
+import { downscaleImage } from "../lib/downscaleImage";
 import { DocGridItem } from "../components/DocGridItem";
-import { AddDocumentForm } from "../components/AddDocumentForm";
+import { AddDocumentForm, type AddDocumentSource } from "../components/AddDocumentForm";
 import { SyncBanner } from "../components/SyncBanner";
 
 const FILE_FILTERS = [{ name: "Documenti", extensions: ["pdf", "jpg", "jpeg", "png"] }];
@@ -31,7 +32,9 @@ export function Vault({
   const docsQuery = useQuery({ queryKey: ["docsList"], queryFn: docsList });
   const [search, setSearch] = useState("");
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
-  const [pendingPath, setPendingPath] = useState<string | null>(null);
+  const [pendingSource, setPendingSource] = useState<AddDocumentSource | null>(null);
+  const [captureError, setCaptureError] = useState<unknown>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
   const docs = docsQuery.data ?? EMPTY_DOCS;
   const allTags = useMemo(() => Array.from(new Set(docs.flatMap((d) => d.tags))).sort(), [docs]);
@@ -65,7 +68,25 @@ export function Vault({
 
   const handleAdd = async () => {
     const path = await openFileDialog({ multiple: false, directory: false, filters: FILE_FILTERS });
-    if (typeof path === "string") setPendingPath(path);
+    if (typeof path === "string") setPendingSource({ kind: "path", path });
+  };
+
+  // Android camera capture (`docs/ROADMAP.md` M5): `<input type="file" capture>` — ignored by
+  // desktop browsers, which just fall back to a normal file picker, so this button works (if
+  // redundantly with "Aggiungi documento") on every platform. Downscaling happens here, in the
+  // browser/webview, *before* any bytes cross IPC — `doc_add_bytes` (and everything downstream of
+  // it, including encryption) only ever sees the already-downscaled result.
+  const handleCameraChange = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setCaptureError(null);
+    try {
+      const { bytes, mime } = await downscaleImage(file);
+      setPendingSource({ kind: "bytes", bytes, mime, originalName: file.name });
+    } catch (err) {
+      setCaptureError(err);
+    }
   };
 
   return (
@@ -152,20 +173,47 @@ export function Vault({
         ))}
       </div>
 
-      <button
-        type="button"
-        onClick={() => void handleAdd()}
-        className="min-h-11 rounded-md bg-emerald-600 px-4 py-3 font-medium text-white"
-      >
-        {it.vault.addDocument}
-      </button>
+      {captureError !== null && (
+        <p role="alert" className="text-sm text-red-400">
+          {errorMessage(captureError)}
+        </p>
+      )}
 
-      {pendingPath && (
+      <div className="flex gap-3">
+        <button
+          type="button"
+          onClick={() => void handleAdd()}
+          className="min-h-11 flex-1 rounded-md bg-emerald-600 px-4 py-3 font-medium text-white"
+        >
+          {it.vault.addFromFile}
+        </button>
+        <button
+          type="button"
+          onClick={() => cameraInputRef.current?.click()}
+          className="min-h-11 flex-1 rounded-md border border-emerald-700 px-4 py-3 font-medium text-emerald-400"
+        >
+          {it.vault.addFromCamera}
+        </button>
+      </div>
+      <label htmlFor="vault-camera-input" className="sr-only">
+        {it.vault.addFromCamera}
+      </label>
+      <input
+        id="vault-camera-input"
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={(e) => void handleCameraChange(e)}
+        className="hidden"
+      />
+
+      {pendingSource && (
         <AddDocumentForm
-          path={pendingPath}
-          onClose={() => setPendingPath(null)}
+          source={pendingSource}
+          onClose={() => setPendingSource(null)}
           onAdded={() => {
-            setPendingPath(null);
+            setPendingSource(null);
             void queryClient.invalidateQueries({ queryKey: ["docsList"] });
           }}
         />

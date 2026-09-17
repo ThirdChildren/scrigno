@@ -21,4 +21,13 @@ cache_limit_mb: bigint,
 /**
  * The server URL entered at setup. Read-only after `vault_create`/`vault_join`.
  */
-server_url: string, };
+server_url: string, 
+/**
+ * Whether quick unlock (`docs/CRYPTO.md §5.2`, `crate::quick_unlock`) is currently enrolled
+ * on this device. Always `false` on desktop (no quick-unlock concept there — see
+ * `commands::vault_unlock_quick`'s desktop stub); reflects real enrollment
+ * (`quick_unlock::is_enabled`) on Android. Read-only: there is no `settings_set` field for
+ * this — enrollment/un-enrollment go through `vault_enable_quick_unlock`/
+ * `vault_forget_quick_unlock` instead.
+ */
+quick_unlock_enabled: boolean, };

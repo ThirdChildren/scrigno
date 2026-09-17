@@ -42,8 +42,30 @@ export const vaultJoin = (args: { serverUrl: string; token: string; passphrase: 
 
 export const vaultUnlock = (args: { passphrase: string }) => invoke<void>("vault_unlock", args);
 
-/** Feature-detected by the caller (`docs/ROADMAP.md` M4: desktop has no quick unlock yet). */
-export const vaultUnlockQuick = () => invoke<void>("vault_unlock_quick");
+/**
+ * `reason` is the Italian biometric-prompt text shown by the OS — this wrapper never hardcodes
+ * it, the caller supplies it (`docs/ARCHITECTURE.md §6`). Always rejects with
+ * `quick_unlock_unavailable` on desktop and on Android when quick unlock isn't enrolled; see
+ * `AppError` codes `quick_unlock_reauth_required`/`biometric_failed` for the other Android
+ * failure modes.
+ */
+export const vaultUnlockQuick = (reason: string) =>
+  invoke<void>("vault_unlock_quick", { reason });
+
+/**
+ * Enrols quick unlock (`docs/CRYPTO.md §5.2`): re-confirms the passphrase and stores it behind
+ * the Android device-secret-protected store. Requires the vault to already be unlocked in this
+ * session. Android only; rejects with `quick_unlock_unavailable` on desktop.
+ */
+export const vaultEnableQuickUnlock = (passphrase: string) =>
+  invoke<void>("vault_enable_quick_unlock", { passphrase });
+
+/**
+ * Un-enrols quick unlock (wipes the Android device secret + Stronghold snapshot). No-op
+ * `Ok(())` on desktop. Callers implementing "Blocca completamente" must call this **alongside**
+ * `vaultLock`, never `vaultLock` alone (`docs/ARCHITECTURE.md §6`).
+ */
+export const vaultForgetQuickUnlock = () => invoke<void>("vault_forget_quick_unlock");
 
 export const vaultLock = () => invoke<void>("vault_lock");
 
@@ -95,6 +117,39 @@ export const docSetKeepOffline = (args: { id: string; keepOffline: boolean }) =>
   invoke<void>("doc_set_keep_offline", args);
 
 export const docDelete = (id: string) => invoke<void>("doc_delete", { id });
+
+/**
+ * Android only: writes a plaintext temp file and opens it via the OS "open with" picker,
+ * deleting the file ~60 s later (`docs/ARCHITECTURE.md §6`). Rejects with `not_implemented` on
+ * desktop — same as any other command failure, show the mapped Italian message.
+ */
+export const docShare = (id: string) => invoke<void>("doc_share", { id });
+
+/**
+ * Raw-bytes upload for the `<input type="file" capture>` flow (`docs/ARCHITECTURE.md §6`):
+ * `doc_add_bytes` reads the metadata from the `x-scrigno-meta` header and the document body from
+ * the raw request body, not from a JSON payload — this is the one command that does not go
+ * through the usual `invoke(cmd, argsObject)` shape.
+ */
+export const docAddBytes = (args: {
+  bytes: ArrayBuffer;
+  title: string;
+  tags: string[];
+  note: string;
+  mime: string;
+  originalName: string;
+}) => {
+  const meta = JSON.stringify({
+    title: args.title,
+    tags: args.tags,
+    note: args.note,
+    mime: args.mime,
+    original_name: args.originalName,
+  });
+  return invoke<DocSummary>("doc_add_bytes", args.bytes, {
+    headers: { "x-scrigno-meta": meta },
+  });
+};
 
 // ---------------------------------------------------------------- sync -------------------------
 

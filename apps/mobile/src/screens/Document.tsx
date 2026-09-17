@@ -7,6 +7,7 @@ import {
   docGetMeta,
   docOpen,
   docSetKeepOffline,
+  docShare,
   docUpdateMeta,
   docsList,
 } from "../lib/ipc";
@@ -105,6 +106,14 @@ export function Document({ id, onBack }: { id: string; onBack: () => void }) {
   const keepOfflineMutation = useMutation({
     mutationFn: (keepOffline: boolean) => docSetKeepOffline({ id, keepOffline }),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["docsList"] }),
+  });
+
+  // Real on Android since M5 (writes a plaintext temp file, opens the OS "open with" picker,
+  // deletes it ~60 s later); still `not_implemented` on desktop — surfaced as a normal mapped
+  // error message below, same as any other command failure, not as something alarming (it's a
+  // documented, expected platform limitation, `docs/ARCHITECTURE.md §6`).
+  const shareMutation = useMutation({
+    mutationFn: () => docShare(id),
   });
 
   const handleDelete = () => {
@@ -213,12 +222,17 @@ export function Document({ id, onBack }: { id: string; onBack: () => void }) {
 
       <button
         type="button"
-        disabled
-        title={it.common.comingSoon}
-        className="min-h-11 rounded-md border border-neutral-800 px-4 py-3 text-neutral-600"
+        onClick={() => shareMutation.mutate()}
+        disabled={shareMutation.isPending}
+        className="min-h-11 rounded-md border border-neutral-700 px-4 py-3 text-neutral-100 disabled:opacity-40"
       >
         {it.document.share}
       </button>
+      {shareMutation.isError && (
+        <p role="alert" className="text-sm text-red-400">
+          {errorMessage(shareMutation.error)}
+        </p>
+      )}
 
       {deleteMutation.isError && (
         <p role="alert" className="text-sm text-red-400">

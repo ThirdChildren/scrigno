@@ -91,6 +91,8 @@ export function Setup() {
         }}
       >
         <Field id="server-url" label={it.setup.serverUrl} value={serverUrl} onChange={setServerUrl} />
+        <p className="text-xs text-neutral-500">{it.setup.serverUrlHintAndroidEmulator}</p>
+        <p className="text-xs text-neutral-500">{it.setup.serverUrlHintAndroidPhone}</p>
         <Field id="token" label={it.setup.token} value={token} onChange={setToken} type="password" />
         <Field
           id="passphrase"

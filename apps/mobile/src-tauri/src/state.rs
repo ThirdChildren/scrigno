@@ -17,6 +17,12 @@ use crate::types::AppError;
 /// forever in the background.
 const AUTO_LOCK_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
+/// `docs/CRYPTO.md §5.2`: "whenever the app goes to background for more than 30 s" (Android
+/// only — see [`AppState::background_since`] and `crate::lifecycle`, which is the only thing
+/// that ever sets this field; on desktop it stays `None` forever and this constant is dead
+/// weight, not a behaviour change).
+const BACKGROUND_LOCK_THRESHOLD: Duration = Duration::from_secs(30);
+
 /// The vault's local store, in one of two states.
 ///
 /// `docs/ARCHITECTURE.md §6`'s three-way `VaultStatus` (`uninitialised`/`locked`/`unlocked`) is
@@ -50,6 +56,13 @@ pub struct AppState {
     pub(crate) last_activity: Mutex<Instant>,
     pub(crate) auto_lock_minutes: Mutex<u32>,
     pub(crate) data_dir: PathBuf,
+    /// Set by `crate::lifecycle` (Android only) when the app's main window loses focus, cleared
+    /// when it regains focus; `None` means "currently foregrounded" (or, on desktop, "always" —
+    /// nothing ever sets this field there). Read by [`spawn_auto_lock`] alongside
+    /// `last_activity` — `docs/CRYPTO.md §5.2` treats "backgrounded > 30 s" and "5 minutes
+    /// inactive" as two independent triggers for the same zeroize-MK action, so one poll loop
+    /// checks both rather than running two near-identical tasks.
+    pub(crate) background_since: Mutex<Option<Instant>>,
 }
 
 impl AppState {
@@ -70,6 +83,7 @@ impl AppState {
             last_activity: Mutex::new(Instant::now()),
             auto_lock_minutes: Mutex::new(auto_lock_minutes),
             data_dir,
+            background_since: Mutex::new(None),
         })
     }
 
@@ -89,20 +103,26 @@ impl AppState {
     }
 }
 
-/// Spawns the inactivity auto-lock background task (`docs/CRYPTO.md §5.2`).
+/// Spawns the auto-lock background task (`docs/CRYPTO.md §5.2`): two independent triggers,
+/// checked on every poll, either of which zeroizes the master key —
+/// - **inactivity**: no command has touched `last_activity` for the configured 1–30 minute
+///   timeout (desktop and mobile);
+/// - **backgrounded** (mobile only, M5): the app's main window has been unfocused for more than
+///   [`BACKGROUND_LOCK_THRESHOLD`] — `AppState::background_since` is only ever set by
+///   `crate::lifecycle`'s window-focus handler (mobile-only, not compiled/registered on
+///   desktop), so this is a genuine no-op on desktop: the field stays `None` forever there and
+///   `backgrounded` below is always `false`.
 ///
-/// **Scope for M4 (desktop):** only the inactivity-timeout half is implemented — "MK is zeroized
-/// from memory after 5 minutes of inactivity (configurable 1–30)". The other half of §5.2 ("and
-/// whenever the app goes to background for more than 30 s") is mobile-specific (foreground/
-/// background lifecycle events) and is explicitly deferred to M5; desktop has no equivalent
-/// background/foreground signal, so faking it here would be a behaviour the UI can't act on
-/// correctly.
+/// Polls every [`AUTO_LOCK_POLL_INTERVAL`]; when either trigger fires, takes the `Unlocked` slot
+/// out, calls `.lock()` on it (zeroizing the master key via `MasterKey`'s own `Drop`, inside
+/// `scrigno-client`), puts a `Locked` slot back, and emits `vault-locked` to the frontend. A
+/// no-op every tick while already `Locked`/`Uninitialised`.
 ///
-/// Polls every [`AUTO_LOCK_POLL_INTERVAL`]; when elapsed inactivity meets or exceeds the
-/// configured timeout, takes the `Unlocked` slot out, calls `.lock()` on it (zeroizing the master
-/// key via `MasterKey`'s own `Drop`, inside `scrigno-client`), puts a `Locked` slot back, and
-/// emits `vault-locked` to the frontend. A no-op every tick while already `Locked`/
-/// `Uninitialised`.
+/// This only ever drops the **in-memory** master key. It does not touch the Android quick-unlock
+/// Stronghold snapshot (`crate::quick_unlock`) — by design, so a background/inactivity auto-lock
+/// stays unlockable again via a biometric prompt; only the explicit "Blocca completamente" action
+/// (`commands::vault_forget_quick_unlock`, called by the frontend alongside `vault_lock`) wipes
+/// that.
 pub(crate) fn spawn_auto_lock(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -110,8 +130,15 @@ pub(crate) fn spawn_auto_lock(app: AppHandle) {
             let state = app.state::<AppState>();
 
             let minutes = *state.auto_lock_minutes.lock().await;
-            let elapsed = state.last_activity.lock().await.elapsed();
-            if elapsed < Duration::from_secs(u64::from(minutes) * 60) {
+            let inactive = state.last_activity.lock().await.elapsed()
+                >= Duration::from_secs(u64::from(minutes) * 60);
+            let backgrounded = state
+                .background_since
+                .lock()
+                .await
+                .map(|since| since.elapsed() >= BACKGROUND_LOCK_THRESHOLD)
+                .unwrap_or(false);
+            if !inactive && !backgrounded {
                 continue;
             }
 

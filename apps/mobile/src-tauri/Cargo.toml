@@ -40,11 +40,35 @@ secrecy = "0.10"
 uuid = { version = "1.26", features = ["v7", "serde"] }
 # Decodes `DocMeta.thumb`'s base64 JPEG for `doc_thumb`'s binary response.
 base64 = "0.22"
-# Guesses a file's MIME type from its extension for `doc_add_from_path`.
+# Guesses a file's MIME type from its extension for `doc_add_from_path`/`doc_share`.
 mime_guess = "2.0"
 # `ts-rs`-exports this crate's own `AppError`/`VaultStatus`/`Settings` to
 # `apps/mobile/src/bindings/`, mirroring `scrigno-client`'s own `ts-export` feature.
 ts-rs = { version = "12.0", optional = true }
+# `AppHandle::fs()` (`FsExt`) reads a path/URI uniformly on every platform: plain `std::fs` on
+# desktop, and — the reason this is added in M5 — Android `content://` URIs (from the dialog
+# plugin's picker) via the native `ContentResolver`, which `std::fs::File::open` cannot do at
+# all. Used only from Rust (`commands::doc_add_from_path`), never exposed to the webview: no
+# `fs:*` capability is granted (see `capabilities/default.json`'s doc comment).
+tauri-plugin-fs = "2"
+# Zeroizes the plaintext buffer `doc_share` (M5) writes to the cache dir before it's dropped —
+# `CLAUDE.md`: "Zeroize every buffer that held key material or plaintext."
+zeroize = "1"
+
+# Mobile-only native plugins (`docs/CRYPTO.md §5.2`, `doc_share`): both crates are useless on
+# desktop (`tauri-plugin-biometric` is `#![cfg(mobile)]` at its own crate root; `vault.stronghold`
+# is a mobile/Android quick-unlock concept, see `src/quick_unlock.rs`), so they are scoped to the
+# mobile targets here rather than depended on unconditionally — keeps them out of the desktop
+# build graph entirely, not just out of desktop's compiled code.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-biometric = "2"
+# Used as a plain Rust library (`tauri_plugin_stronghold::stronghold::Stronghold`), never
+# registered as a Tauri plugin/exposed to the webview — see `src/quick_unlock.rs`'s module docs
+# for why (MK never leaves the device unwrapped; no reason to give JS a bridge to key storage).
+tauri-plugin-stronghold = "2"
+# Generates the 32-byte random "device secret" that protects the Stronghold snapshot
+# (`docs/CRYPTO.md §5.2`).
+rand = "0.9"
 
 [features]
 ts-export = ["dep:ts-rs"]

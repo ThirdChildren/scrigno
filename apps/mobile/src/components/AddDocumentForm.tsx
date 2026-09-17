@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { it } from "../i18n/it";
 import { errorMessage } from "../i18n/errors";
-import { docAddFromPath, type DocSummary } from "../lib/ipc";
+import { docAddBytes, docAddFromPath, type DocSummary } from "../lib/ipc";
 
 function parseTags(raw: string): string[] {
   return raw
@@ -11,13 +11,23 @@ function parseTags(raw: string): string[] {
     .filter((t) => t.length > 0);
 }
 
-/** Modal metadata form shown after the file-open dialog returns a path. */
+/**
+ * Where the document's bytes come from: a filesystem path from the desktop dialog plugin
+ * (`doc_add_from_path`), or already-in-memory bytes from the Android camera-capture flow
+ * (`doc_add_bytes`, `docs/ARCHITECTURE.md §6`) — already downscaled by the caller
+ * (`lib/downscaleImage.ts`) before this component ever sees them.
+ */
+export type AddDocumentSource =
+  | { kind: "path"; path: string }
+  | { kind: "bytes"; bytes: ArrayBuffer; mime: string; originalName: string };
+
+/** Modal metadata form shown after a file is picked (dialog) or captured (camera). */
 export function AddDocumentForm({
-  path,
+  source,
   onClose,
   onAdded,
 }: {
-  path: string;
+  source: AddDocumentSource;
   onClose: () => void;
   onAdded: (doc: DocSummary) => void;
 }) {
@@ -26,7 +36,17 @@ export function AddDocumentForm({
   const [note, setNote] = useState("");
 
   const mutation = useMutation({
-    mutationFn: () => docAddFromPath({ path, title, tags: parseTags(tags), note }),
+    mutationFn: () =>
+      source.kind === "path"
+        ? docAddFromPath({ path: source.path, title, tags: parseTags(tags), note })
+        : docAddBytes({
+            bytes: source.bytes,
+            mime: source.mime,
+            originalName: source.originalName,
+            title,
+            tags: parseTags(tags),
+            note,
+          }),
     onSuccess: onAdded,
   });
 

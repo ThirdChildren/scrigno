@@ -28,10 +28,12 @@ apps/mobile/src-tauri/gen/android/build/
 !.vscode/extensions.json
 .DS_Store
 
-# Claude Code local-only state
+# Claude Code local-only state (root and any nested working-dir .claude/, e.g. apps/mobile/.claude/)
 .claude/settings.local.json
 .claude/agent-memory-local/
 .claude/agent-memory/
+**/.claude/agent-memory-local/
+**/.claude/agent-memory/
 
 # Claude Code project config — kept local, not pushed
 CLAUDE.md

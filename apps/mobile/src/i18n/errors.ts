@@ -19,6 +19,9 @@ const messages: Record<string, string> = {
   invalid_input: "Dati non validi. Controlla i campi e riprova.",
   server_contract_error: "Risposta del server inattesa. Riprova più tardi.",
   quick_unlock_unavailable: "Lo sblocco rapido non è disponibile su questo dispositivo.",
+  quick_unlock_reauth_required:
+    "Lo sblocco rapido è scaduto. Inserisci la passphrase per continuare.",
+  biometric_failed: "Verifica dell'impronta o del volto non riuscita. Riprova.",
   already_unlocked: "Il vault è già sbloccato.",
   no_saved_credentials:
     "Nessuna credenziale salvata su questo dispositivo. Configura di nuovo il vault.",

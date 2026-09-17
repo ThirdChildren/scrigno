@@ -10,6 +10,10 @@
 mod commands;
 mod config;
 mod error;
+#[cfg(mobile)]
+mod lifecycle;
+#[cfg(mobile)]
+mod quick_unlock;
 mod state;
 mod types;
 
@@ -19,15 +23,31 @@ use state::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    if let Err(err) = tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        // Used only from Rust (`AppHandle::fs()`, `commands::doc_add_from_path`), never exposed
+        // to the webview — see that command's doc comment for why (Android `content://` URIs).
+        .plugin(tauri_plugin_fs::init());
+    #[cfg(mobile)]
+    {
+        // Gates `vault_unlock_quick` (`crate::quick_unlock`); also used only from Rust
+        // (`AppHandle::biometric()`), never exposed to the webview.
+        builder = builder.plugin(tauri_plugin_biometric::init());
+    }
+
+    if let Err(err) = builder
         .setup(|app| {
-            // Desktop-only data dir for M4; Android's own path resolution is M5.
             let data_dir = app.path().app_data_dir()?;
             let state = AppState::open(data_dir)?;
             app.manage(state);
             state::spawn_auto_lock(app.handle().clone());
+            #[cfg(mobile)]
+            {
+                lifecycle::register(app);
+                commands::cleanup_stale_share_files(app.handle());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -36,6 +56,8 @@ pub fn run() {
             commands::vault_join,
             commands::vault_unlock,
             commands::vault_unlock_quick,
+            commands::vault_enable_quick_unlock,
+            commands::vault_forget_quick_unlock,
             commands::vault_lock,
             commands::vault_add_recovery_code,
             commands::docs_list,

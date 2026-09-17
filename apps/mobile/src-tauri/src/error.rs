@@ -22,8 +22,9 @@
 //! | `ServerContract` | `server_contract_error` |
 //!
 //! Plus Tauri-layer-only codes, none of which carry a path/SQL/key material:
-//! `quick_unlock_unavailable`, `already_unlocked`, `no_saved_credentials`, `config_error`,
-//! `io_error`, `invalid_request`, `not_implemented`, `internal_error`.
+//! `quick_unlock_unavailable`, `quick_unlock_reauth_required`, `biometric_failed`,
+//! `already_unlocked`, `no_saved_credentials`, `config_error`, `io_error`, `invalid_request`,
+//! `not_implemented`, `internal_error`.
 
 use scrigno_client::ClientError;
 
@@ -46,6 +47,25 @@ impl AppError {
             "quick_unlock_unavailable",
             "quick unlock is not available on this platform",
         )
+    }
+
+    /// Android only (`crate::quick_unlock`): a re-auth trigger fired (7 days since the last
+    /// passphrase unlock, or 5 failed biometric attempts) — quick unlock was just wiped and the
+    /// frontend must fall back to the normal passphrase screen. `#[cfg(mobile)]`: only ever
+    /// constructed from mobile-only code, so this would be dead code on desktop otherwise.
+    #[cfg(mobile)]
+    pub(crate) fn quick_unlock_reauth_required() -> Self {
+        Self::new(
+            "quick_unlock_reauth_required",
+            "quick unlock expired; enter the passphrase to continue",
+        )
+    }
+
+    /// Android only: the biometric prompt itself failed or was cancelled (not yet at the
+    /// 5-attempt threshold — see [`Self::quick_unlock_reauth_required`] for that).
+    #[cfg(mobile)]
+    pub(crate) fn biometric_failed() -> Self {
+        Self::new("biometric_failed", "biometric authentication failed")
     }
 
     /// A command that needs an unlocked vault (master key in memory) was called while
@@ -98,8 +118,10 @@ impl AppError {
         Self::new("invalid_input", message)
     }
 
-    /// A command not implemented on this platform/milestone (`doc_share`, deferred to M5 per
-    /// `docs/ROADMAP.md`).
+    /// A command not implemented on this platform (`doc_share` on desktop — real on Android since
+    /// M5, `docs/ROADMAP.md`). `#[cfg(not(mobile))]`: `doc_share`'s desktop stub is the only
+    /// caller, so this would be dead code on an Android build otherwise.
+    #[cfg(not(mobile))]
     pub(crate) fn not_implemented() -> Self {
         Self::new("not_implemented", "not implemented yet")
     }
@@ -169,7 +191,7 @@ mod tests {
 
     #[test]
     fn helper_constructors_never_embed_a_path_looking_string() {
-        let errors = [
+        let mut errors = vec![
             AppError::quick_unlock_unavailable(),
             AppError::not_unlocked(),
             AppError::already_unlocked(),
@@ -177,9 +199,15 @@ mod tests {
             AppError::config_error(),
             AppError::io_error(),
             AppError::invalid_request(),
-            AppError::not_implemented(),
             AppError::internal_state(),
         ];
+        #[cfg(not(mobile))]
+        errors.push(AppError::not_implemented());
+        #[cfg(mobile)]
+        errors.extend([
+            AppError::quick_unlock_reauth_required(),
+            AppError::biometric_failed(),
+        ]);
         for err in errors {
             assert!(!err.code.is_empty());
             assert!(!err.message.contains('/'));

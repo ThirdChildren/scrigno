@@ -177,15 +177,17 @@ All commands are thin: parse args → call `scrigno-client` → map errors to `A
 | `vault_create` | `server_url, token, passphrase` | `()` | first device |
 | `vault_join` | `server_url, token, passphrase` | `()` | second device |
 | `vault_unlock` | `passphrase` | `()` | |
-| `vault_unlock_quick` | — | `()` | biometric / device store; `Err(code="quick_unlock_unavailable")` on desktop |
-| `vault_lock` | — | `()` | zeroizes MK |
+| `vault_unlock_quick` | Android: `reason` (Italian biometric-prompt text, frontend-supplied); desktop: — | `()` | `docs/CRYPTO.md §5.2`; `Err(code="quick_unlock_unavailable")` on desktop (no Stronghold/biometric device store there); Android errors also include `quick_unlock_reauth_required` (7-day/5-failed-attempt trigger fired) and `biometric_failed` (single failed/cancelled prompt) |
+| `vault_enable_quick_unlock` | `passphrase` | `()` | M5, Android only; requires the vault already unlocked in this session; `Err(code="quick_unlock_unavailable")` on desktop |
+| `vault_forget_quick_unlock` | — | `()` | M5; wipes the Android quick-unlock Stronghold snapshot + device secret — **frontend must call this alongside `vault_lock`** for "Blocca completamente" (a plain `vault_lock` alone leaves quick unlock enrolled); no-op `Ok(())` on desktop |
+| `vault_lock` | — | `()` | zeroizes MK only — does not touch the Android quick-unlock store, see `vault_forget_quick_unlock` |
 | `docs_list` | — | `DocSummary[]` | decrypted meta minus `thumb` |
 | `doc_thumb` | `id` | binary | JPEG bytes from meta, or empty |
 | `doc_get_meta` | `id` | `DocMeta` | |
 | `doc_add_from_path` | `path, title, tags, note` | `DocSummary` | path from dialog plugin; Android `content://` handled by fs plugin |
 | `doc_add_bytes` | raw body + header `x-scrigno-meta` (JSON `{title,tags,note,mime,original_name}`) | `DocSummary` | for `<input type=file capture>`; `tauri::ipc::Request` |
 | `doc_open` | `id` | binary (`tauri::ipc::Response`) | decrypts to memory; caller revokes object URL on close |
-| `doc_share` | `id` | `()` | writes plaintext to cache dir, opens share sheet, deletes after |
+| `doc_share` | `id` | `()` | M5, Android only (`Err(code="not_implemented")` on desktop): writes plaintext to `app_cache_dir()`, opens it via `tauri-plugin-opener` (Android "open with", not a true multi-target `ACTION_SEND` share sheet — see `commands::doc_share`'s doc comment), deletes the file 60 s later (or at next app start if the process died first, via a startup sweep) |
 | `doc_update_meta` | `id, title, tags, note` | `DocSummary` | bumps version, dirty |
 | `doc_set_keep_offline` | `id, bool` | `()` | |
 | `doc_delete` | `id` | `()` | tombstone, dirty |

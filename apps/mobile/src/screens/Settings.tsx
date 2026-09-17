@@ -2,7 +2,15 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { it } from "../i18n/it";
 import { errorMessage } from "../i18n/errors";
-import { settingsGet, settingsSet, vaultAddRecoveryCode, vaultLock } from "../lib/ipc";
+import {
+  settingsGet,
+  settingsSet,
+  vaultAddRecoveryCode,
+  vaultEnableQuickUnlock,
+  vaultForgetQuickUnlock,
+  vaultLock,
+  type Settings as SettingsPayload,
+} from "../lib/ipc";
 import { RecoveryCodeReveal } from "../components/RecoveryCodeReveal";
 import { CheckIcon } from "../components/CheckIcon";
 import { useSavedFlash } from "../lib/useSavedFlash";
@@ -47,6 +55,10 @@ export function Settings({ onBack }: { onBack: () => void }) {
         auto_lock_minutes: autoLockMinutes,
         cache_limit_mb: BigInt(cacheLimitMb),
         server_url: settingsQuery.data?.server_url ?? "",
+        // Read-only field (`Settings.quick_unlock_enabled`, like `server_url` above): echoed back
+        // unchanged so this round trip never fails. `settings_set` ignores it server-side —
+        // enrollment only changes via `vault_enable_quick_unlock`/`vault_forget_quick_unlock`.
+        quick_unlock_enabled: settingsQuery.data?.quick_unlock_enabled ?? false,
       }),
     onSuccess: (data) => queryClient.setQueryData(["settings"], data),
   });
@@ -64,9 +76,59 @@ export function Settings({ onBack }: { onBack: () => void }) {
     onSuccess: setRecoveryCode,
   });
 
+  // Real, persisted enrollment status from `settings_get` (`Settings.quick_unlock_enabled`,
+  // `docs/CRYPTO.md §5.2`) — reflects actual Android enrollment, `false` on desktop. The
+  // enable/forget mutations below don't return a `Settings` payload, so their `onSuccess`
+  // patches the cached query result directly (same as `saveMutation.onSuccess` writes the
+  // response it *does* get back) instead of tracking a separate local flag.
+  const quickUnlockEnabled = settingsQuery.data?.quick_unlock_enabled ?? false;
+  const [quickUnlockFormOpen, setQuickUnlockFormOpen] = useState(false);
+  const [quickUnlockPassphrase, setQuickUnlockPassphrase] = useState("");
+
+  const enableQuickUnlockMutation = useMutation({
+    mutationFn: () => vaultEnableQuickUnlock(quickUnlockPassphrase),
+    onSuccess: () => {
+      queryClient.setQueryData<SettingsPayload>(["settings"], (old) =>
+        old ? { ...old, quick_unlock_enabled: true } : old,
+      );
+      setQuickUnlockFormOpen(false);
+      setQuickUnlockPassphrase("");
+    },
+  });
+
+  const forgetQuickUnlockMutation = useMutation({
+    mutationFn: vaultForgetQuickUnlock,
+    onSuccess: () => {
+      queryClient.setQueryData<SettingsPayload>(["settings"], (old) =>
+        old ? { ...old, quick_unlock_enabled: false } : old,
+      );
+    },
+  });
+
+  const handleQuickUnlockToggle = () => {
+    if (quickUnlockEnabled) {
+      forgetQuickUnlockMutation.mutate();
+      return;
+    }
+    setQuickUnlockFormOpen(true);
+  };
+
+  // "Blocca completamente" must zeroize the in-memory master key *and* wipe any enrolled
+  // Android quick-unlock store together, every time — a plain `vaultLock()` alone leaves quick
+  // unlock enrolled, which contradicts what "completamente" promises (`docs/ARCHITECTURE.md §6`,
+  // `docs/CRYPTO.md §5.2`: re-auth with the passphrase is required after this action).
+  // `vaultForgetQuickUnlock` is a harmless no-op on desktop / when nothing is enrolled.
   const lockMutation = useMutation({
-    mutationFn: vaultLock,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["vaultStatus"] }),
+    mutationFn: async () => {
+      await vaultLock();
+      await vaultForgetQuickUnlock();
+    },
+    onSuccess: () => {
+      queryClient.setQueryData<SettingsPayload>(["settings"], (old) =>
+        old ? { ...old, quick_unlock_enabled: false } : old,
+      );
+      void queryClient.invalidateQueries({ queryKey: ["vaultStatus"] });
+    },
   });
 
   if (recoveryCode) {
@@ -145,6 +207,77 @@ export function Settings({ onBack }: { onBack: () => void }) {
           {errorMessage(recoveryMutation.error)}
         </p>
       )}
+
+      <section className="flex flex-col gap-3 rounded-md border border-neutral-800 p-4">
+        <h2 className="font-semibold text-neutral-200">{it.settings.quickUnlockHeading}</h2>
+        <p className="text-sm text-neutral-400">{it.settings.quickUnlockDescription}</p>
+        <p className="text-xs text-neutral-500">{it.settings.quickUnlockDisclosure}</p>
+
+        <button
+          type="button"
+          onClick={handleQuickUnlockToggle}
+          aria-pressed={quickUnlockEnabled}
+          disabled={forgetQuickUnlockMutation.isPending}
+          className={`min-h-11 rounded-md border px-4 py-3 disabled:opacity-40 ${
+            quickUnlockEnabled
+              ? "border-emerald-700 text-emerald-400"
+              : "border-neutral-700 text-neutral-100"
+          }`}
+        >
+          {quickUnlockEnabled ? it.settings.quickUnlockEnabled : it.settings.quickUnlockEnable}
+        </button>
+        {forgetQuickUnlockMutation.isError && (
+          <p role="alert" className="text-sm text-red-400">
+            {errorMessage(forgetQuickUnlockMutation.error)}
+          </p>
+        )}
+
+        {quickUnlockFormOpen && (
+          <form
+            className="flex flex-col gap-3"
+            onSubmit={(e) => {
+              e.preventDefault();
+              enableQuickUnlockMutation.mutate();
+            }}
+          >
+            <label className="flex flex-col gap-1 text-sm text-neutral-300">
+              {it.settings.quickUnlockConfirmPassphrase}
+              <input
+                type="password"
+                value={quickUnlockPassphrase}
+                onChange={(e) => setQuickUnlockPassphrase(e.target.value)}
+                autoFocus
+                className="min-h-11 rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2"
+              />
+            </label>
+            {enableQuickUnlockMutation.isError && (
+              <p role="alert" className="text-sm text-red-400">
+                {errorMessage(enableQuickUnlockMutation.error)}
+              </p>
+            )}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setQuickUnlockFormOpen(false);
+                  setQuickUnlockPassphrase("");
+                  enableQuickUnlockMutation.reset();
+                }}
+                className="min-h-11 flex-1 rounded-md border border-neutral-700 px-4 py-3 text-neutral-100"
+              >
+                {it.common.cancel}
+              </button>
+              <button
+                type="submit"
+                disabled={quickUnlockPassphrase.length === 0 || enableQuickUnlockMutation.isPending}
+                className="min-h-11 flex-1 rounded-md bg-emerald-600 px-4 py-3 font-medium text-white disabled:opacity-40"
+              >
+                {it.settings.quickUnlockActivate}
+              </button>
+            </div>
+          </form>
+        )}
+      </section>
 
       <button
         type="button"

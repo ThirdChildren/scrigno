@@ -186,6 +186,23 @@ Purpose: not typing a 12+ char passphrase every time, while keeping MK encrypted
   whenever the app goes to background for more than 30 s. Locked ≠ logged out: ciphertext cache
   stays, only MK is dropped.
 
+**M5 implementation note (read before changing `apps/mobile/src-tauri/src/quick_unlock.rs`).**
+`tauri-plugin-biometric` 2.3 (checked against `docs.rs`/the plugin's own source this milestone)
+exposes only `authenticate(reason, options) -> Result<()>` — a yes/no prompt, no Android
+Keystore/`CryptoObject` integration. Option 1 above is not reachable without a small custom
+Kotlin plugin, which does not exist yet (`TODO(m5)` in `quick_unlock.rs`); M5 ships option 2.
+
+A second, independent deviation from the wording above: **the Stronghold store holds the
+passphrase, not the raw MK.** `scrigno-client`'s public API has no entry point that reconstructs
+an `UnlockedVault` from a raw master key — `Vault::unlock` only accepts a passphrase, and
+`UnlockedVault`'s fields are private to that crate. Until `scrigno-client` grows an MK-based
+unlock entry point (a `sync-client` change, tracked as a follow-up, not done in M5), the quick
+unlock store holds the passphrase itself, protected by the same device-secret-keyed Stronghold
+snapshot described above, and calls the ordinary `Vault::unlock` with it. Same threat-model class
+(both are only as safe as the device secret + Stronghold's encryption), not the literal design
+above. `crypto-reviewer` should treat this as a new secret-at-rest surface to review, same as if
+it were the MK.
+
 ### 5.3 What is written to disk on the device
 Allowed: ciphertext blobs (cache), `enc_meta`, the SQLite index (ids, versions, dirty flags,
 cursor), Stronghold snapshot, settings, OCR model files (public, not secret). **Never**: plaintext
@@ -205,7 +222,7 @@ time (`subtle::ConstantTimeEq`). Never log it.
 |---|---|---|
 | Server fully compromised (DB + blobs + token) | **Protected.** Sees only sizes, timestamps, counts | Can delete, withhold or roll back records. Detected partially (client keeps its cursor and versions; a rollback shows up as `server_seq` going backwards → app shows a warning). Full protection out of scope. |
 | Network attacker (no TLS or broken TLS) | Protected by E2E | Same as above |
-| Lost/stolen phone, vault locked | Protected by Argon2id + passphrase; with 5.2 option 1 also by hardware | — |
+| Lost/stolen phone, vault locked | Protected by Argon2id + passphrase; with 5.2 option 1 also by hardware. **With 5.2 option 2 (the only one currently shipped, M5) this guarantee does not hold**: the Stronghold snapshot holds the passphrase itself, encrypted directly under the 32-byte device secret with no KDF step, so anyone who can read `quick_unlock_secret` + `vault.stronghold` (root, ADB backup/debug access, forensic extraction) recovers the passphrase without ever touching Argon2id. Biometric gating is UX-only in this mode, not a cryptographic barrier. Disable quick unlock, or wait for a Keystore-backed option 1, if this adversary is in scope. | — |
 | Lost/stolen phone, vault unlocked, screen unlocked | **Not protected.** Mitigation: auto-lock | — |
 | Malware on the device with root | Not protected | — |
 | Someone who knows the passphrase | Not protected (by definition) | — |

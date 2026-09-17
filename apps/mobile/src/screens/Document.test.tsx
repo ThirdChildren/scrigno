@@ -160,4 +160,31 @@ describe("Document", () => {
     // separate alert banner.
     expect(saveButton).toHaveTextContent(it.common.saved);
   });
+
+  // M5: `doc_share` is real on Android and still `not_implemented` on desktop — the button is no
+  // longer permanently disabled; a desktop rejection surfaces as a normal mapped error message.
+  vitestIt("calls doc_share when Condividi is clicked and shows the mapped error on rejection", async () => {
+    const meta = makeMeta();
+    mockInvoke.mockImplementation((cmd: string) => {
+      if (cmd === "doc_get_meta") return Promise.resolve(meta);
+      if (cmd === "docs_list") return Promise.resolve([]);
+      if (cmd === "doc_open") return Promise.resolve(new ArrayBuffer(8));
+      if (cmd === "doc_share") {
+        return Promise.reject({ code: "not_implemented", message: "not implemented yet" });
+      }
+      return Promise.reject(new Error(`unexpected command ${cmd}`));
+    });
+
+    const user = userEvent.setup();
+    renderDocument();
+
+    const shareButton = await screen.findByRole("button", { name: it.document.share });
+    expect(shareButton).toBeEnabled();
+    await user.click(shareButton);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Questa funzione non è ancora disponibile.",
+    );
+    expect(mockInvoke).toHaveBeenCalledWith("doc_share", { id: "doc-1" });
+  });
 });

@@ -39,6 +39,10 @@ export const it = {
     submitCreate: "Crea vault",
     submitJoin: "Unisciti al vault",
     submitting: "Attendere…",
+    serverUrlHintAndroidEmulator:
+      "Emulatore Android: usa http://10.0.2.2:8787 per raggiungere il computer di sviluppo.",
+    serverUrlHintAndroidPhone:
+      "Telefono reale sulla stessa rete: usa l'indirizzo IP del computer di sviluppo (con SCRIGNO_PUBLISH_HOST=0.0.0.0 impostato nel .env) al posto di 127.0.0.1.",
   },
   recoveryCode: {
     heading: "Codice di recupero",
@@ -54,13 +58,16 @@ export const it = {
     passphrase: "Passphrase",
     submit: "Sblocca",
     submitting: "Sblocco…",
+    quickUnlock: "Sblocca con l'impronta",
+    quickUnlockReason: "Sblocca Scrigno con l'impronta o il volto",
+    quickUnlockSubmitting: "Verifica in corso…",
+    or: "oppure",
   },
   vault: {
     heading: "I tuoi documenti",
     searchPlaceholder: "Cerca per titolo o tag",
     noResults: "Nessun documento trovato",
     empty: "Non hai ancora aggiunto documenti",
-    addDocument: "Aggiungi documento",
     sync: "Sincronizza",
     syncing: "Sincronizzazione…",
     lock: "Blocca",
@@ -71,6 +78,8 @@ export const it = {
     addTitle: "Nuovo documento",
     addNote: "Aggiungi documento",
     dirtyBadge: "Non sincronizzato",
+    addFromFile: "Scegli file",
+    addFromCamera: "Scatta foto",
   },
   syncBanner: {
     pulled: (n: number) => `${n} ricevuti`,
@@ -102,5 +111,14 @@ export const it = {
     about: "Informazioni",
     aboutVersion: (version: string) => `Versione ${version}`,
     serverUrl: "Server",
+    quickUnlockHeading: "Sblocco rapido",
+    quickUnlockDescription:
+      "Apri il vault con l'impronta o il volto invece di digitare la passphrase ogni volta.",
+    quickUnlockDisclosure:
+      "Lo sblocco rapido salva la passphrase protetta da un segreto del dispositivo; l'impronta o il volto sbloccano solo l'accesso, non aggiungono protezione crittografica extra in questa versione (non usa Argon2id né una chiave hardware). Su un telefono smarrito o accessibile da altri questa protezione è più debole della sola passphrase: disattivalo se non ti fidi del dispositivo.",
+    quickUnlockEnable: "Attiva sblocco rapido",
+    quickUnlockEnabled: "Sblocco rapido attivo",
+    quickUnlockConfirmPassphrase: "Conferma la passphrase per attivare",
+    quickUnlockActivate: "Attiva",
   },
 } as const;

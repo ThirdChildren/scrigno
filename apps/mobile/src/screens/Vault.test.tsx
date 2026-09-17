@@ -9,6 +9,9 @@ import type { DocSummary } from "../lib/ipc";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("../lib/downscaleImage", () => ({
+  downscaleImage: vi.fn().mockResolvedValue({ bytes: new ArrayBuffer(4), mime: "image/jpeg" }),
+}));
 
 const mockInvoke = vi.mocked(invoke);
 
@@ -95,5 +98,22 @@ describe("Vault", () => {
 
     expect(screen.getByText("Passaporto")).toBeInTheDocument();
     expect(screen.queryByText("Bolletta")).not.toBeInTheDocument();
+  });
+
+  // M5: camera capture must downscale before any bytes cross IPC (`docs/ROADMAP.md`), and go
+  // through `doc_add_bytes` rather than `doc_add_from_path`.
+  vitestIt("downscales a captured photo and opens the add form with the resulting bytes", async () => {
+    renderVault([]);
+    await screen.findByText(it.vault.empty);
+
+    const user = userEvent.setup();
+    const file = new File([new Uint8Array([1, 2, 3])], "foto.jpg", { type: "image/jpeg" });
+    const input = document.getElementById("vault-camera-input") as HTMLInputElement;
+    await user.upload(input, file);
+
+    expect(await screen.findByText(it.vault.addTitle)).toBeInTheDocument();
+
+    const { downscaleImage } = await import("../lib/downscaleImage");
+    expect(downscaleImage).toHaveBeenCalledWith(file);
   });
 });
