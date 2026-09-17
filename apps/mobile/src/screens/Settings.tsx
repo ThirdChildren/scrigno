@@ -35,6 +35,14 @@ export function Settings({ onBack }: { onBack: () => void }) {
     onSuccess: (data) => queryClient.setQueryData(["settings"], data),
   });
 
+  // Same dirty-tracking as `Document.tsx`: these inputs save on blur with no explicit Save
+  // button, so the only feedback the user gets is this "salvato" message, shown once a save
+  // succeeds and hidden again as soon as a field diverges from what was last saved.
+  const savedAutoLockMinutes = loadedSettings?.auto_lock_minutes ?? autoLockMinutes;
+  const savedCacheLimitMb = loadedSettings ? Number(loadedSettings.cache_limit_mb) : cacheLimitMb;
+  const isDirty = autoLockMinutes !== savedAutoLockMinutes || cacheLimitMb !== savedCacheLimitMb;
+  const showSaved = saveMutation.isSuccess && !isDirty;
+
   const recoveryMutation = useMutation({
     mutationFn: vaultAddRecoveryCode,
     onSuccess: setRecoveryCode,
@@ -96,6 +104,11 @@ export function Settings({ onBack }: { onBack: () => void }) {
       {saveMutation.isError && (
         <p role="alert" className="text-sm text-red-400">
           {errorMessage(saveMutation.error)}
+        </p>
+      )}
+      {showSaved && (
+        <p role="alert" className="text-sm text-emerald-400">
+          {it.common.saved}
         </p>
       )}
 

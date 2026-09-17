@@ -20,6 +20,7 @@ export const it = {
     tags: "Tag",
     tagsHint: "Separati da virgola",
     note: "Nota",
+    saved: "Salvato",
   },
   setup: {
     heading: "Configura il tuo vault",

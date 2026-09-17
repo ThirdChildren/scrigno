@@ -876,6 +876,18 @@ impl UnlockedVault {
             .cloned()
             .ok_or(ClientError::NotFound)?;
 
+        // `DocSummary` (what `self.index`/`current` holds) deliberately omits `thumb`
+        // (`docs/ARCHITECTURE.md §6`), so it can't be used to preserve it here. Decrypt the
+        // row's still-current `enc_meta` (before it's overwritten below) to recover the existing
+        // thumbnail — `update_meta` never touches the underlying blob/image, so the thumbnail
+        // must survive a title/tags/note-only edit.
+        let doc_id = DocId::from_uuid(id);
+        let old_doc_version = doc_version_of(&row);
+        let existing_enc =
+            meta::EncMeta::from_bytes(&row.enc_meta).map_err(|_| ClientError::Crypto)?;
+        let existing_meta = meta::open(&self.mk, doc_id, old_doc_version, &existing_enc)?;
+        let thumb = existing_meta.thumb;
+
         // Not `row.version += 1`: the server always assigns exactly `If-Match(base_version) + 1`
         // on the next successful push (`sync.rs::push_once`), no matter how many local edits
         // happened first. Re-sealing at `base_version + 1` every time (so a second/third local
@@ -897,9 +909,8 @@ impl UnlockedVault {
             content_hash: current.content_hash,
             original_name: current.original_name,
             created_at: current.created_at,
-            thumb: None,
+            thumb,
         };
-        let doc_id = DocId::from_uuid(id);
         let doc_version = doc_version_of(&row);
         let enc_meta = meta::seal(&self.mk, doc_id, doc_version, &doc_meta)?;
         row.enc_meta = enc_meta.as_bytes().to_vec();
@@ -1150,6 +1161,41 @@ mod tests {
             "expected a thumbnail to round-trip"
         );
         assert_eq!(fetched.thumb, doc_meta.thumb);
+    }
+
+    #[tokio::test]
+    async fn update_meta_preserves_existing_thumbnail() {
+        // Regression test: `update_meta` edits title/tags/note only and never touches the
+        // underlying blob/image, so an image document's thumbnail must survive the edit.
+        let (_dir, mut vault) = test_vault("update-meta-thumb");
+        let summary = vault
+            .add(
+                std::io::Cursor::new(sample_png()),
+                "Foto".to_string(),
+                vec!["vacanze".to_string()],
+                "una nota".to_string(),
+                "image/png".to_string(),
+                "foto.png".to_string(),
+            )
+            .await
+            .expect("add image document");
+        let doc_id = Uuid::parse_str(&summary.id).expect("valid uuid");
+
+        let before = vault.get_meta(doc_id).expect("get_meta before edit");
+        let thumb_before = before.thumb.expect("expected a thumbnail right after add");
+
+        vault
+            .update_meta(
+                doc_id,
+                "Foto (rinominata)".to_string(),
+                vec!["vacanze".to_string(), "estate".to_string()],
+                "nota aggiornata".to_string(),
+            )
+            .expect("update_meta");
+
+        let after = vault.get_meta(doc_id).expect("get_meta after edit");
+        assert_eq!(after.title, "Foto (rinominata)");
+        assert_eq!(after.thumb, Some(thumb_before));
     }
 
     #[test]

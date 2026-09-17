@@ -59,6 +59,19 @@ export function Document({ id, onBack }: { id: string; onBack: () => void }) {
     },
   });
 
+  // Dirty-tracking: compare the editable fields against the last-loaded/last-saved metadata.
+  // Nothing to compare against yet (`loadedMeta` still undefined) reads as "not dirty", which
+  // combines with the `title.trim() === ""` guard below to keep Save disabled until a document
+  // has actually loaded.
+  const savedTitle = loadedMeta?.title ?? "";
+  const savedTags = loadedMeta ? loadedMeta.tags.join(", ") : "";
+  const savedNote = loadedMeta?.note ?? "";
+  const isDirty = title !== savedTitle || tags !== savedTags || note !== savedNote;
+  // Shown once a save succeeds and hidden again the moment the user changes anything (`isDirty`
+  // flips back to `true`) — no separate timer needed, `updateMutation.isSuccess` only resets
+  // when a new save starts.
+  const showSaved = updateMutation.isSuccess && !isDirty;
+
   const deleteMutation = useMutation({
     mutationFn: () => docDelete(id),
     onSuccess: () => {
@@ -90,6 +103,12 @@ export function Document({ id, onBack }: { id: string; onBack: () => void }) {
           {it.document.editTitle}
         </h1>
       </div>
+
+      {metaQuery.isError && (
+        <p role="alert" className="text-sm text-red-400">
+          {errorMessage(metaQuery.error)}
+        </p>
+      )}
 
       <div className="flex items-center justify-center rounded-md bg-neutral-900 p-2">
         {!fileUrl && <p className="p-6 text-neutral-500">{it.common.loading}</p>}
@@ -142,10 +161,15 @@ export function Document({ id, onBack }: { id: string; onBack: () => void }) {
             {errorMessage(updateMutation.error)}
           </p>
         )}
+        {showSaved && (
+          <p role="alert" className="text-sm text-emerald-400">
+            {it.common.saved}
+          </p>
+        )}
 
         <button
           type="submit"
-          disabled={title.trim() === "" || updateMutation.isPending}
+          disabled={title.trim() === "" || updateMutation.isPending || !isDirty}
           className="min-h-11 rounded-md bg-emerald-600 px-4 py-3 font-medium text-white disabled:opacity-40"
         >
           {it.common.save}
