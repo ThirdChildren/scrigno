@@ -58,6 +58,12 @@ pub struct UnlockedVault {
     pub(crate) mk: MasterKey,
     pub(crate) http: HttpClient,
     pub(crate) index: Vec<DocSummary>,
+    /// Ids of documents that failed to decrypt while rebuilding `index` at [`Vault::unlock`]
+    /// time (corrupt/tampered `enc_meta`, or a document affected by a since-fixed bug — see
+    /// [`rebuild_index`]) and were therefore skipped rather than aborting the whole unlock.
+    /// Never populated anywhere else. `docs/ARCHITECTURE.md`/the Tauri layer can surface this so
+    /// an unreadable document doesn't just silently vanish from `list()` with no explanation.
+    pub(crate) unreadable_at_unlock: Vec<String>,
 }
 
 impl Vault {
@@ -129,6 +135,7 @@ impl Vault {
             mk,
             http,
             index: Vec::new(),
+            unreadable_at_unlock: Vec::new(),
         })
     }
 
@@ -170,6 +177,7 @@ impl Vault {
             mk,
             http,
             index: Vec::new(),
+            unreadable_at_unlock: Vec::new(),
         })
     }
 
@@ -217,7 +225,7 @@ impl Vault {
                 .ok_or(ClientError::Locked)?,
         };
         let http = HttpClient::new(&server_url, token)?;
-        let index = rebuild_index(&self.store, &mk)?;
+        let (index, unreadable_at_unlock) = rebuild_index(&self.store, &mk)?;
 
         Ok(UnlockedVault {
             store: self.store,
@@ -225,6 +233,7 @@ impl Vault {
             mk,
             http,
             index,
+            unreadable_at_unlock,
         })
     }
 }
@@ -328,15 +337,29 @@ fn persist_bootstrap(
     Ok(())
 }
 
-fn rebuild_index(store: &Store, mk: &MasterKey) -> Result<Vec<DocSummary>> {
+/// Rebuilds the in-memory index from every non-tombstoned local row, decrypting each row's
+/// `enc_meta`. A single document that fails to decrypt (corrupt/tampered `enc_meta`, or one hit
+/// by a since-fixed local bug) is **skipped, not fatal** — `unlock()` must succeed even if one
+/// document is unreadable, so that one bad document can never lock a user out of the entire
+/// vault. Returns the index plus the ids of any documents that were skipped this way; only a
+/// local-storage failure (listing rows at all) is still propagated as an `Err`.
+fn rebuild_index(store: &Store, mk: &MasterKey) -> Result<(Vec<DocSummary>, Vec<String>)> {
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for row in store.list_documents()? {
         if row.deleted {
             continue;
         }
-        out.push(row_to_summary(store, mk, &row)?);
+        if let Ok(summary) = row_to_summary(store, mk, &row) {
+            out.push(summary);
+        } else {
+            // Never log the ciphertext/plaintext/key material — only that this id's metadata
+            // could not be authenticated.
+            tracing::warn!(doc_id = %row.id, "skipping document: enc_meta failed to decrypt");
+            skipped.push(row.id.to_string());
+        }
     }
-    Ok(out)
+    Ok((out, skipped))
 }
 
 pub(crate) fn row_to_summary(
@@ -542,6 +565,16 @@ impl UnlockedVault {
     #[must_use]
     pub fn list(&self) -> Vec<DocSummary> {
         self.index.clone()
+    }
+
+    /// Ids (as strings) of documents that existed locally at unlock time but whose `enc_meta`
+    /// failed to decrypt, so they were skipped and are **not** present in [`Self::list`]. Empty
+    /// in the ordinary case. Lets a caller (CLI/Tauri layer) tell the user "N documents could
+    /// not be read" instead of those documents silently vanishing with no explanation — see
+    /// [`rebuild_index`]'s doc comment for why unlock doesn't just fail instead.
+    #[must_use]
+    pub fn unreadable_documents(&self) -> &[String] {
+        &self.unreadable_at_unlock
     }
 
     /// Returns the full decrypted [`DocMeta`] for document `id`, including `thumb` — which
@@ -843,7 +876,14 @@ impl UnlockedVault {
             .cloned()
             .ok_or(ClientError::NotFound)?;
 
-        row.version += 1;
+        // Not `row.version += 1`: the server always assigns exactly `If-Match(base_version) + 1`
+        // on the next successful push (`sync.rs::push_once`), no matter how many local edits
+        // happened first. Re-sealing at `base_version + 1` every time (so a second/third local
+        // edit before a sync re-targets the *same* version rather than stacking on top of the
+        // previous edit's version) keeps `row.version` and `enc_meta`'s AAD-bound version
+        // (`docs/CRYPTO.md §4.3`) permanently in agreement with what the server will actually
+        // assign. See the regression test `update_meta_twice_before_sync_stays_decryptable`.
+        row.version = row.base_version + 1;
         row.dirty = true;
         row.updated_at = now_rfc3339();
 
@@ -895,7 +935,9 @@ impl UnlockedVault {
             .cloned()
             .ok_or(ClientError::NotFound)?;
 
-        row.version += 1;
+        // Same reasoning as `update_meta`: always reseal at `base_version + 1`, the exact
+        // version the server will assign on the next push, never a running local counter.
+        row.version = row.base_version + 1;
         row.dirty = true;
         row.deleted = true;
         row.blob_id = None;
@@ -999,6 +1041,7 @@ mod tests {
             mk,
             http,
             index: Vec::new(),
+            unreadable_at_unlock: Vec::new(),
         };
         (dir, vault)
     }
@@ -1151,6 +1194,7 @@ mod tests {
             mk,
             http,
             index: Vec::new(),
+            unreadable_at_unlock: Vec::new(),
         };
         (dir, vault)
     }

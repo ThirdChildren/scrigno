@@ -164,6 +164,12 @@ local change, CLI). Steps:
    - local row `dirty == 1` and `record.version > base_version` → **conflict**: keep the server
      record as-is for this id, re-create the local change as a *new* document (new UUIDv7, meta
      title suffixed with ` (copia in conflitto <date>)`), dirty. No data is ever lost silently.
+   - local row `dirty == 1` and `record.version <= base_version` → **not** a conflict: the server
+     hasn't moved past what the pending edit was based on. This is normal — pull runs before push
+     (step 1 before step 2), so a document's own just-pushed record can be seen again by a later
+     pull once the cursor catches up to it, or the server may genuinely have rolled back (see
+     below). Either way, leave the local row untouched (`dirty`, `enc_meta`, `version` unchanged)
+     so step 2 pushes the pending edit normally; do **not** overwrite it with the server record.
    - advance `cursor` after each page. If a record has `server_seq < cursor` the server was
      rolled back → surface `SyncWarning::ServerRollback`, continue.
 2. **Push** — for each `dirty` row in `updated_at` order:

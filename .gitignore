@@ -37,3 +37,6 @@ apps/mobile/src-tauri/gen/android/build/
 CLAUDE.md
 .claude/agents/
 .claude/scheduled_tasks.lock
+
+pdf_prova
+credentials.txt

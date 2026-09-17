@@ -758,3 +758,234 @@ async fn resume_after_interrupted_upload() {
     assert!(!vault.list()[0].dirty);
     assert_eq!(state.lock().unwrap().docs.len(), 1);
 }
+
+/// Regression test for the version-drift bug: calling `update_meta` **twice** on the same
+/// document before ever running `sync()` used to permanently corrupt it. Root cause: each edit
+/// bumped `row.version` by 1 and sealed `enc_meta`'s AAD at that bumped value, but the server
+/// always assigns exactly `If-Match(base_version) + 1` on the next push — so after N local edits
+/// the stored `enc_meta` was bound to a version number the row could never actually reach,
+/// making it permanently undecryptable (surfacing as a `Crypto` error on every future
+/// `unlock()`'s index rebuild). The fix reseals every local edit at `base_version + 1`, so
+/// repeated edits before a sync simply keep re-targeting the one version the server will
+/// actually assign, with the last edit winning.
+///
+/// This test failed on the pre-fix code (confirmed manually: `row.version += 1` in both
+/// `update_meta`/`delete` reproduces exactly this) and passes after the fix.
+#[tokio::test]
+async fn update_meta_twice_before_sync_stays_decryptable() {
+    let (server, _state) = fake_server().await;
+    let dir = TempDir::new("double-edit");
+
+    let mut vault = Vault::open(dir.path())
+        .expect("open")
+        .create(&server.uri(), token(), &passphrase())
+        .await
+        .expect("create");
+
+    let summary = vault
+        .add(
+            Cursor::new(b"hello scrigno".to_vec()),
+            "Titolo".to_string(),
+            vec![],
+            String::new(),
+            "text/plain".to_string(),
+            "hello.txt".to_string(),
+        )
+        .await
+        .expect("add");
+    let id = Uuid::parse_str(&summary.id).expect("parse id");
+
+    // Two local edits, with **no sync in between** — exactly the sequence from the bug report
+    // (`base_version` stays 0 the whole time; only a single subsequent `sync()` call pushes).
+    vault
+        .update_meta(id, "Modifica 1".to_string(), vec![], String::new())
+        .expect("first update_meta");
+    vault
+        .update_meta(id, "Modifica 2".to_string(), vec![], String::new())
+        .expect("second update_meta");
+
+    vault.sync().await.expect("sync after both edits");
+
+    // Simulate a fresh `unlock()` (e.g. the app restarting): reopen the local store from
+    // scratch rather than reusing the in-memory `UnlockedVault`, so this genuinely exercises
+    // `rebuild_index`'s decrypt-from-disk path, not just in-memory state.
+    drop(vault);
+    let reopened = Vault::open(dir.path())
+        .expect("reopen")
+        .unlock(&passphrase(), token(), None)
+        .expect(
+            "unlock must succeed: a single document must never be able to lock out the \
+             whole vault",
+        );
+
+    assert!(
+        reopened.unreadable_documents().is_empty(),
+        "the document should decrypt cleanly after the fix, not be skipped as unreadable: {:?}",
+        reopened.unreadable_documents()
+    );
+    let list = reopened.list();
+    assert_eq!(list.len(), 1, "the document must still be listed");
+    assert_eq!(
+        list[0].title, "Modifica 2",
+        "the second (last) local edit before sync should win"
+    );
+}
+
+/// `rebuild_index` hardening: a document whose stored `enc_meta` fails to decrypt (corrupted on
+/// disk, tampered, or — pre-fix — a casualty of the version-drift bug above) must be skipped,
+/// not allowed to abort `unlock()` for the whole vault. A healthy sibling document must still
+/// unlock and list normally, and the skipped document's id must be reported via
+/// `UnlockedVault::unreadable_documents()` rather than silently vanishing.
+#[tokio::test]
+async fn unlock_skips_one_corrupted_document_but_still_succeeds() {
+    let (server, _state) = fake_server().await;
+    let dir = TempDir::new("corrupt-doc");
+
+    let mut vault = Vault::open(dir.path())
+        .expect("open")
+        .create(&server.uri(), token(), &passphrase())
+        .await
+        .expect("create");
+
+    let healthy = vault
+        .add(
+            Cursor::new(b"healthy content".to_vec()),
+            "Documento sano".to_string(),
+            vec![],
+            String::new(),
+            "text/plain".to_string(),
+            "healthy.txt".to_string(),
+        )
+        .await
+        .expect("add healthy");
+
+    let corrupted = vault
+        .add(
+            Cursor::new(b"soon to be corrupted".to_vec()),
+            "Documento corrotto".to_string(),
+            vec![],
+            String::new(),
+            "text/plain".to_string(),
+            "corrupt.txt".to_string(),
+        )
+        .await
+        .expect("add corrupted");
+
+    vault.sync().await.expect("sync");
+    drop(vault);
+
+    // Flip the last byte of the corrupted document's stored `enc_meta` directly in the local
+    // SQLite store — simulating on-disk corruption/tampering (or leftover damage from the
+    // version-drift bug fixed above) without needing to reproduce that bug end-to-end.
+    {
+        let conn = rusqlite::Connection::open(dir.path().join("vault.sqlite3"))
+            .expect("open sqlite directly");
+        let mut enc_meta: Vec<u8> = conn
+            .query_row(
+                "SELECT enc_meta FROM document WHERE id = ?1",
+                rusqlite::params![corrupted.id],
+                |r| r.get(0),
+            )
+            .expect("read enc_meta");
+        let last = enc_meta.len() - 1;
+        enc_meta[last] ^= 0xFF;
+        conn.execute(
+            "UPDATE document SET enc_meta = ?1 WHERE id = ?2",
+            rusqlite::params![enc_meta, corrupted.id],
+        )
+        .expect("corrupt enc_meta");
+    }
+
+    let reopened = Vault::open(dir.path())
+        .expect("reopen")
+        .unlock(&passphrase(), token(), None)
+        .expect("unlock must succeed even with one corrupted document");
+
+    assert_eq!(
+        reopened.unreadable_documents(),
+        std::slice::from_ref(&corrupted.id),
+        "the corrupted document should be reported as skipped"
+    );
+    let list = reopened.list();
+    assert_eq!(list.len(), 1, "only the healthy document should be listed");
+    assert_eq!(list[0].id, healthy.id);
+    assert_eq!(list[0].title, "Documento sano");
+}
+
+/// Regression test for the "own prior state" silent-revert bug: `pull()`'s conflict check used
+/// to have only two cases (`dirty && version > base_version` → conflict, everything else →
+/// unconditional overwrite), missing the third case where a dirty local row's edit is *not* a
+/// conflict (`item.version <= base_version`) but must still be left alone rather than overwritten.
+///
+/// This happens in completely ordinary use, without a second device: `sync()` pulls before it
+/// pushes (`docs/ARCHITECTURE.md §5`), so a brand-new document's first `sync()` pushes it (its
+/// own pull phase ran too early to see it) and only advances the pull cursor *past* it on some
+/// later pull. Concretely: add a doc → `sync()` (push lands it at `version = 1`, `dirty = false`,
+/// but the cursor doesn't yet cover its `server_seq` since the pull phase ran first) → edit the
+/// title (`dirty = true`, `base_version` still 1) → `sync()` again: this call's pull phase now
+/// sees the doc's own record from the first push, at `item.version == 1 == base_version`. That's
+/// not `>`, so pre-fix this fell into the `else` branch and `apply_pulled_record` overwrote the
+/// dirty row with the stale server copy, silently discarding the pending title edit with no
+/// conflict copy and no error.
+///
+/// Confirmed to fail on the pre-fix two-case `is_conflict` branch (reverting the fix to the
+/// binary check reproduces exactly this) and pass after adding the missing third case.
+#[tokio::test]
+async fn own_record_pulled_back_does_not_revert_pending_edit() {
+    let (server, _state) = fake_server().await;
+    let dir = TempDir::new("own-record-revert");
+
+    let mut vault = Vault::open(dir.path())
+        .expect("open")
+        .create(&server.uri(), token(), &passphrase())
+        .await
+        .expect("create");
+
+    let summary = vault
+        .add(
+            Cursor::new(b"hello scrigno".to_vec()),
+            "Titolo originale".to_string(),
+            vec![],
+            String::new(),
+            "text/plain".to_string(),
+            "hello.txt".to_string(),
+        )
+        .await
+        .expect("add");
+    let id = Uuid::parse_str(&summary.id).expect("parse id");
+
+    // First sync: pushes the new document (pull phase ran too early to see it).
+    let first = vault.sync().await.expect("first sync pushes the doc");
+    assert_eq!(first.pushed, 1);
+    assert!(!vault.list()[0].dirty);
+
+    // Edit the title, but don't sync yet: dirty again, base_version still 1.
+    vault
+        .update_meta(id, "Titolo modificato".to_string(), vec![], String::new())
+        .expect("update_meta");
+    assert!(vault.list()[0].dirty);
+
+    // Second sync: its pull phase now catches up to the doc's own record from the first push
+    // (item.version == 1 == base_version — not a conflict, but also not safe to overwrite).
+    let second = vault.sync().await.expect("second sync");
+    assert_eq!(
+        second.conflicts, 0,
+        "this is not a real conflict: the server never moved past our edit's base"
+    );
+
+    // Reopen from scratch (fresh `unlock()`) so this genuinely re-decrypts `enc_meta` from disk
+    // rather than trusting any in-memory state that might have survived unrelated to the bug.
+    drop(vault);
+    let reopened = Vault::open(dir.path())
+        .expect("reopen")
+        .unlock(&passphrase(), token(), None)
+        .expect("unlock");
+
+    let list = reopened.list();
+    assert_eq!(list.len(), 1);
+    assert_eq!(
+        list[0].title, "Titolo modificato",
+        "the pending edit must survive a second sync(), not be silently reverted to the \
+         pre-edit title pulled back from the server"
+    );
+}

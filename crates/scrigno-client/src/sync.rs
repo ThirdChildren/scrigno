@@ -78,23 +78,38 @@ impl UnlockedVault {
                 }
 
                 let existing = self.store.get_document(item.id)?;
-                let is_conflict = existing
-                    .as_ref()
-                    .is_some_and(|r| r.dirty && item.version > r.base_version);
 
-                if is_conflict {
-                    // Safe: `is_conflict` is only true when `existing` is `Some`.
-                    let old_row = existing.expect("existing checked by is_conflict");
-                    let old_summary = self
-                        .index
-                        .iter()
-                        .find(|s| s.id == item.id.to_string())
-                        .cloned();
-                    self.apply_pulled_record(item)?;
-                    self.create_conflict_copy(&old_row, old_summary).await?;
-                    conflicts += 1;
-                } else {
-                    self.apply_pulled_record(item)?;
+                // Three cases, per `docs/ARCHITECTURE.md §5`:
+                //   (a) local row missing, or present and clean (`!dirty`) → safe to overwrite.
+                //   (b) `dirty` and `item.version > base_version` → real conflict: the server
+                //       has moved past what our pending edit was based on. Keep the server
+                //       record as-is for this id, spin the local edit off into a new
+                //       conflict-copy document.
+                //   (c) `dirty` and `item.version <= base_version` → the server has *not* moved
+                //       past our edit's base: this is either our own prior state coming back
+                //       around (the pull cursor catching up to a record this same device already
+                //       pushed) or a genuine server rollback (already warned about above). Either
+                //       way there is nothing to reconcile — the pending edit is still valid and
+                //       must be left untouched so `push_once()` pushes it normally. Overwriting
+                //       here would silently discard the dirty edit with no conflict copy and no
+                //       error (the bug this comment block exists to prevent regressing).
+                match existing {
+                    Some(row) if row.dirty && item.version > row.base_version => {
+                        let old_summary = self
+                            .index
+                            .iter()
+                            .find(|s| s.id == item.id.to_string())
+                            .cloned();
+                        self.apply_pulled_record(item)?;
+                        self.create_conflict_copy(&row, old_summary).await?;
+                        conflicts += 1;
+                    }
+                    Some(row) if row.dirty => {
+                        // Case (c): leave the local dirty row untouched.
+                    }
+                    _ => {
+                        self.apply_pulled_record(item)?;
+                    }
                 }
                 pulled += 1;
             }
