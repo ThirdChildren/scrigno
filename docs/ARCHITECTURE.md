@@ -21,6 +21,11 @@ the crates; change it in the same commit as the code that changes the behaviour.
   API used identically by the Tauri commands and by the CLI.
 - `scrigno-server`: dumb, honest storage with optimistic concurrency and a change feed.
 - `scrigno-cli`: `scrigno --data-dir <dir> <command>`; one data dir = one "device".
+- `scrigno-index` (M7/M8): pure functions over already-decrypted data. Document kinds and
+  validity rules; OCR adapters (`ocrs` for images, `pdf-extract` for PDF text layers) taking
+  bytes in and text out; text normalisation (lowercase, NFKD accent folding, tokeniser); an
+  in-memory inverted index built from `Vec<DocMeta>` on unlock. No network, no persistence, no
+  crypto, no Tauri types.
 
 ## 2. Server data model (Postgres)
 
@@ -76,14 +81,7 @@ Blob storage: `object_store::local::LocalFileSystem` rooted at `SCRIGNO_BLOB_DIR
 - Auth: `Authorization: Bearer <SCRIGNO_API_TOKEN>` on every route except `/healthz`. Missing or
   wrong → `401` with empty body. Constant-time compare.
 - JSON bodies `application/json`; blobs `application/octet-stream`.
-- Errors: `{ "error": { "code": "…", "message": "…" } }`; `code` is stable and machine-readable,
-  with one documented exception: `412 version_mismatch` returns the current `DocumentRecord`
-  itself as the body (not wrapped in the error envelope), so a conflicting client can act on it
-  without a second round trip. Codes used: the per-endpoint ones in the table below, plus these
-  generic ones any route can return: `unauthorized` (401), `not_found` (404, e.g. `GET`/`DELETE`
-  on an id that has never existed), `bad_request` (400, malformed header/body/query),
-  `range_not_satisfiable` (416, `GET /v1/blobs/{id}` with an out-of-bounds `Range`),
-  `payload_too_large` (413), `internal_error` (500, never includes SQL/paths/internal detail).
+- Errors: `{ "error": { "code": "…", "message": "…" } }`; `code` is stable and machine-readable.
 - Limits: JSON bodies 1 MiB; blob upload `SCRIGNO_MAX_BLOB_BYTES` (default 200 MiB) → `413`.
 - Base64 in JSON is standard alphabet with padding.
 
@@ -103,21 +101,11 @@ Blob storage: `object_store::local::LocalFileSystem` rooted at `SCRIGNO_BLOB_DIR
 
 ```ts
 type Vault = { id: string; created_at: string; keyslots: Keyslot[] };
-type Keyslot = {
-  id: string; kind: "passphrase" | "recovery"; kdf: KdfParams;
-  wrapped_mk: string /* base64 */; created_at: string;
-};
 type DocumentRecord = {
   id: string; version: number; blob_id: string | null; blob_size: number;
   enc_meta: string /* base64 */; deleted: boolean; server_seq: number; updated_at: string;
 };
 ```
-
-`POST /v1/vault` and `POST /v1/vault/keyslots` accept a `Keyslot`-shaped body (`created_at` is
-ignored if present -- the server always sets it). `id` is client-generated like every other id.
-The server validates `Keyslot`/`DocumentRecord` fields only for shape (valid uuid/base64/non-empty,
-`kind` one of the two allowed values, `kdf` is a JSON object) and never interprets `kdf`,
-`wrapped_mk` or `enc_meta` beyond that -- they are opaque to it by design.
 
 Write order on the client is always **blob first, then document**, so a document never points at
 a missing blob. Interrupted uploads leave an orphan blob that GC collects.
@@ -149,8 +137,10 @@ CREATE TABLE blob_cache (
 );
 ```
 
-Decrypted metadata is **not** stored; the in-memory index (`Vec<DocSummary>`) is rebuilt from
-`enc_meta` on unlock (fast: one AEAD open per document). Cache eviction: LRU when the cache
+Decrypted metadata is **not** stored; the in-memory index (`Vec<DocSummary>` plus, from M8,
+the `scrigno_index::SearchIndex` over titles, tags, notes and `ocr_text`) is rebuilt from
+`enc_meta` on unlock (one AEAD open per document; with 1 000 documents and OCR text this must
+stay under 1 s on a mid-range phone — measure it) and dropped on lock. Cache eviction: LRU when the cache
 exceeds `cache_limit_mb` (default 512), never evicting `keep_offline` blobs or dirty documents.
 
 ## 5. Sync algorithm
@@ -164,12 +154,6 @@ local change, CLI). Steps:
    - local row `dirty == 1` and `record.version > base_version` → **conflict**: keep the server
      record as-is for this id, re-create the local change as a *new* document (new UUIDv7, meta
      title suffixed with ` (copia in conflitto <date>)`), dirty. No data is ever lost silently.
-   - local row `dirty == 1` and `record.version <= base_version` → **not** a conflict: the server
-     hasn't moved past what the pending edit was based on. This is normal — pull runs before push
-     (step 1 before step 2), so a document's own just-pushed record can be seen again by a later
-     pull once the cursor catches up to it, or the server may genuinely have rolled back (see
-     below). Either way, leave the local row untouched (`dirty`, `enc_meta`, `version` unchanged)
-     so step 2 pushes the pending edit normally; do **not** overwrite it with the server record.
    - advance `cursor` after each page. If a record has `server_seq < cursor` the server was
      rolled back → surface `SyncWarning::ServerRollback`, continue.
 2. **Push** — for each `dirty` row in `updated_at` order:
@@ -195,7 +179,6 @@ All commands are thin: parse args → call `scrigno-client` → map errors to `A
 | `vault_unlock` | `passphrase` | `()` | |
 | `vault_unlock_quick` | — | `()` | biometric / device store; `Err(code="quick_unlock_unavailable")` on desktop |
 | `vault_lock` | — | `()` | zeroizes MK |
-| `vault_add_recovery_code` | — | `String` | new recovery keyslot; return value is the plaintext code, **shown once**, never cached/re-fetchable/logged |
 | `docs_list` | — | `DocSummary[]` | decrypted meta minus `thumb` |
 | `doc_thumb` | `id` | binary | JPEG bytes from meta, or empty |
 | `doc_get_meta` | `id` | `DocMeta` | |
@@ -207,27 +190,30 @@ All commands are thin: parse args → call `scrigno-client` → map errors to `A
 | `doc_set_keep_offline` | `id, bool` | `()` | |
 | `doc_delete` | `id` | `()` | tombstone, dirty |
 | `sync_now` | — | `SyncReport` | |
+| `docs_search` | `query` | `DocSummary[]` | M8; in-memory; prefix + phrase; returns highlights as `[start,end]` byte ranges into `ocr_text` |
+| `doc_run_ocr` | `id` (+ optional raw body of a rendered page PNG with header `x-scrigno-page`) | `OcrResult { chars, lang, engine }` | M8; images → `ocrs` on Rust side; PDFs → text layer, else the UI renders pages with pdf.js and posts PNGs |
+| `docs_reindex` | — | `ReindexReport` | M8; runs OCR for every document without `ocr_text`, emits `ocr-progress` |
+| `doc_set_kind` | `id, kind, issued_at?, expires_at?, remind_days?` | `DocSummary` | M7; when `expires_at` is omitted, computed from `FASCICOLO.md` rules |
+| `docs_expiring` | `within_days` | `ExpiringDoc[]` | M7; also used to (re)schedule local notifications |
+| `kinds_list` | — | `KindInfo[]` | M7; ids, Italian labels, default validity |
 | `settings_get` / `settings_set` | `Settings` | | auto-lock minutes, cache limit, server url (read-only after init) |
 
-Events emitted to the frontend: `vault-locked` (auto-lock fired), `sync-progress { phase, done, total }`.
+Events emitted to the frontend: `vault-locked` (auto-lock fired), `sync-progress { phase, done, total }`,
+`ocr-progress { done, total, current_id }` (M8).
 
 Types shared with TS (`ts-rs`): `DocSummary`, `DocMeta`, `SyncReport`, `Settings`, `AppError`,
-`VaultStatus`.
+`VaultStatus`, `KindInfo`, `ExpiringDoc`, `OcrResult`, `ReindexReport`.
+
+Reminder scheduling (M7): on unlock and after every `doc_set_kind`/sync, the Rust side computes
+the next reminders from `docs_expiring` and (re)schedules them with `tauri-plugin-notification`
+(scheduled notifications on Android; on desktop a check at app start). Notification text is
+generic ("Un documento scade tra 30 giorni") — the title is shown only after unlock.
 
 ## 7. Configuration
 
-Server (env, all prefixed `SCRIGNO_`): `DATABASE_URL`, `API_TOKEN` (required, rejected at startup
-if shorter than 32 characters), `BLOB_DIR`, `BIND` (default `0.0.0.0:8787`), `MAX_BLOB_BYTES`
-(default 200 MiB), `GC_INTERVAL_SECS` (default 3600). Plus `RUST_LOG`.
+Server (env, all prefixed `SCRIGNO_`): `DATABASE_URL`, `API_TOKEN`, `BLOB_DIR`, `BIND`
+(default `0.0.0.0:8787`), `MAX_BLOB_BYTES`, `GC_INTERVAL_SECS`. Plus `RUST_LOG`.
 
-Client/app: `server_url` and `token` entered once in the setup screen. As of M4, `scrigno-client`'s
-own SQLite `kv` store deliberately never persists the token (each caller re-supplies it — a
-decision made for `scrigno-cli`'s stateless-invocation model in M3 and kept for the desktop app
-rather than reopened mid-milestone); the Tauri app instead persists `{server_url, token,
-auto_lock_minutes}` in its own plaintext `<app_data_dir>/config.json` (`apps/mobile/src-tauri/src/
-config.rs`), written with `0600` permissions on Unix. This is the same sensitivity class
-`docs/CRYPTO.md` §6 already assigns the token ("if it leaks, an attacker can delete or add
-ciphertext but cannot read anything"). MK persistence via Stronghold is M5 (quick unlock); M4 has
-no quick unlock, so MK is never written to disk at all — re-derived from the passphrase on every
-`vault_unlock`. Dev defaults suggested by the UI: `http://127.0.0.1:8787` on desktop,
-`http://10.0.2.2:8787` on the Android emulator.
+Client/app: `server_url` and `token` entered once in the setup screen, stored in the SQLite `kv`
+table (token) and Stronghold (MK). Dev defaults suggested by the UI: `http://127.0.0.1:8787` on
+desktop, `http://10.0.2.2:8787` on the Android emulator.

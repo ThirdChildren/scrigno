@@ -9,7 +9,7 @@ secret, **DEK** per-document data key, **AAD** additional authenticated data.
 | Purpose | Primitive | Crate |
 |---|---|---|
 | AEAD | XChaCha20-Poly1305 (24-byte nonce, 16-byte tag) | `chacha20poly1305` |
-| Chunked AEAD | STREAM construction, `EncryptorBE32` / `DecryptorBE32` over XChaCha20-Poly1305 | `chacha20poly1305` + `aead-stream` (the STREAM impl moved out of `aead`'s own `stream` feature into this sibling RustCrypto crate as of `aead` 0.6) |
+| Chunked AEAD | STREAM construction, `aead::stream::EncryptorBE32` / `DecryptorBE32` over XChaCha20-Poly1305 | `chacha20poly1305` with `stream` feature |
 | Password KDF | Argon2id | `argon2` |
 | Hash | BLAKE3 (plaintext content hash, client-side dedup/integrity) | `blake3` |
 | Randomness | `OsRng` only | `rand` / `rand_core` |
@@ -102,9 +102,26 @@ Plaintext is `DocMeta` as canonical JSON (serde_json, keys in struct order):
   "content_hash": "<hex blake3 of plaintext>",
   "original_name": "scan.pdf",
   "created_at": "RFC 3339",
-  "thumb": "<base64 JPEG ≤ 24 KiB or null>"
+  "thumb": "<base64 JPEG ≤ 24 KiB or null>",
+
+  "kind": "patente" | "cie" | … | null,          // added in M7, see docs/FASCICOLO.md
+  "issued_at": "RFC 3339 date or null",           // added in M7
+  "expires_at": "RFC 3339 date or null",          // added in M7
+  "remind_days": [30, 7] | null,                  // added in M7; null = app default
+  "ocr_text": "<normalised text ≤ 64 KiB or null>",   // added in M8, extracted on device
+  "ocr_lang": "ita" | null,                       // added in M8
+  "ocr_engine": "ocrs/0.x" | "pdf-text" | null    // added in M8, for re-indexing decisions
 }
 ```
+
+**Compatibility rule.** `v` stays `1`. New fields are optional (`serde(default)`) and readers
+must ignore unknown fields (never `deny_unknown_fields`). A vault created in M1–M4 opens
+unchanged; a document that gains OCR text or a kind is simply re-sealed with a bumped
+`doc_version`. Bump `v` only for a change that old clients could misinterpret.
+
+`ocr_text` is **user content** exactly like `title`: it lives only inside `EncMeta`, is never
+written to disk in plaintext, never sent anywhere else, never logged. The on-device OCR engine
+runs in the same process as decryption and gets a plaintext buffer that is zeroized afterwards.
 
 Envelope:
 ```
@@ -129,11 +146,7 @@ sees an image.
 ```
 
 Segments: plaintext is split into chunks of exactly **1 MiB (1 048 576 B)**, last chunk may be
-shorter, including 0 B — this happens for a genuinely empty file, and also whenever the plaintext
-length is an exact multiple of 1 MiB (a streaming writer cannot know a full chunk was the last one
-without an EOF signal, so it always emits a trailing empty final segment in that case; a streaming
-reader must not assume a declared segment count and instead detect the true end by EOF). Each
-segment is
+shorter (may be 0 B for an empty file: still emit one final empty segment). Each segment is
 `XChaCha20-Poly1305` over the chunk with the STREAM nonce (`prefix || counter u32 BE || last_flag`)
 as implemented by `EncryptorBE32`; ciphertext length = chunk + 16.
 
@@ -175,10 +188,9 @@ Purpose: not typing a 12+ char passphrase every time, while keeping MK encrypted
 
 ### 5.3 What is written to disk on the device
 Allowed: ciphertext blobs (cache), `enc_meta`, the SQLite index (ids, versions, dirty flags,
-cursor), Stronghold snapshot, settings, the app's own `config.json` (server URL, bearer token,
-auto-lock minutes — see `docs/ARCHITECTURE.md` §7; low-sensitivity per §6 above, written `0600` on
-Unix). **Never**: plaintext files, decrypted metadata, MK, DEKs, passphrase, thumbnails in
-plaintext. Sharing/exporting a document to another app writes a
+cursor), Stronghold snapshot, settings, OCR model files (public, not secret). **Never**: plaintext
+files, decrypted metadata, OCR text, the in-memory search index, MK, DEKs, passphrase, thumbnails
+in plaintext. The full-text index is rebuilt from `enc_meta` on every unlock and dropped on lock. Sharing/exporting a document to another app writes a
 plaintext copy to the app's cache dir and deletes it as soon as the share sheet returns.
 
 ## 6. Server API token
@@ -197,7 +209,8 @@ time (`subtle::ConstantTimeEq`). Never log it.
 | Lost/stolen phone, vault unlocked, screen unlocked | **Not protected.** Mitigation: auto-lock | — |
 | Malware on the device with root | Not protected | — |
 | Someone who knows the passphrase | Not protected (by definition) | — |
-| Traffic analysis (blob sizes reveal file sizes) | Partially leaks. Optional padding to 64 KiB multiples is a M6+ improvement | — |
+| Traffic analysis (blob sizes reveal file sizes) | Partially leaks. Optional padding to 64 KiB multiples is a later improvement | — |
+| `enc_meta` size reveals whether a document has OCR text and roughly how much | Minor leak. Pad `EncMeta` plaintext to 4 KiB multiples from M8 on (reader must strip padding; keep a `pad` JSON field or trailing NULs — decide in M8 and document here) | — |
 
 ## 8. Test vectors
 
