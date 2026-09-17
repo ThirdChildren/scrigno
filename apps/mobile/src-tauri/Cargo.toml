@@ -22,10 +22,32 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+# File-open dialog for `doc_add_from_path` (frontend calls it to get a path; wired here for
+# capability/permission configuration and so the command surface is testable from Rust alone).
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Async mutex (safe to hold across `.await`, unlike `std::sync::Mutex`) for `AppState`'s vault
+# slot, plus the periodic timer driving the inactivity auto-lock task.
+tokio = { version = "1.53", features = ["rt", "sync", "time", "macros"] }
 scrigno-client = { path = "../../../crates/scrigno-client" }
+# Only to name `scrigno_core::meta::DocMeta` as `doc_get_meta`'s return type; scrigno-client
+# returns it but doesn't re-export it, and it's already a transitive dependency via the path dep
+# above, so this adds no new code, only a direct name for an existing type in the graph.
+scrigno-core = { path = "../../../crates/scrigno-core" }
+# `SecretString` for passphrase/token args before handing them to scrigno-client.
+secrecy = "0.10"
+uuid = { version = "1.26", features = ["v7", "serde"] }
+# Decodes `DocMeta.thumb`'s base64 JPEG for `doc_thumb`'s binary response.
+base64 = "0.22"
+# Guesses a file's MIME type from its extension for `doc_add_from_path`.
+mime_guess = "2.0"
+# `ts-rs`-exports this crate's own `AppError`/`VaultStatus`/`Settings` to
+# `apps/mobile/src/bindings/`, mirroring `scrigno-client`'s own `ts-export` feature.
+ts-rs = { version = "12.0", optional = true }
 
+[features]
+ts-export = ["dep:ts-rs"]
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]

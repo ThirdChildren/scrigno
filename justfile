@@ -60,6 +60,7 @@ check: check-rust check-ui
 # Export Rust types to TypeScript bindings (apps/mobile/src/bindings)
 bindings:
     cargo test -p scrigno-client --features ts-export export_bindings
+    cd {{app_dir}}/src-tauri && cargo test --features ts-export export_bindings
 
 # ---------------------------------------------------------------- app -------------------------
 

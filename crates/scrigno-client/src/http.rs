@@ -24,7 +24,7 @@ use uuid::Uuid;
 use crate::error::{ClientError, Result};
 use crate::wire::{
     BlobPutResponseWire, ChangesPageWire, CreateVaultWire, DocumentRecordWire, ErrorBodyWire,
-    NewKeyslotWire, PutDocWire, VaultWire,
+    KeyslotWire, NewKeyslotWire, PutDocWire, VaultWire,
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -98,6 +98,20 @@ impl HttpClient {
         let resp = self
             .auth(self.json.post(self.url("/v1/vault")))
             .json(&body)
+            .send()
+            .await
+            .map_err(map_reqwest_err)?;
+        parse_json_ok(resp).await
+    }
+
+    /// `POST /v1/vault/keyslots` -> `201 Keyslot`: registers an additional keyslot (e.g. a
+    /// `recovery` slot) on an already-existing vault. Not idempotent/retried — a duplicate
+    /// retry would register two slots for the same secret, so a transport failure is surfaced
+    /// to the caller as-is.
+    pub async fn add_keyslot(&self, keyslot: NewKeyslotWire) -> Result<KeyslotWire> {
+        let resp = self
+            .auth(self.json.post(self.url("/v1/vault/keyslots")))
+            .json(&keyslot)
             .send()
             .await
             .map_err(map_reqwest_err)?;

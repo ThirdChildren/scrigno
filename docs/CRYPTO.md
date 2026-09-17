@@ -175,8 +175,10 @@ Purpose: not typing a 12+ char passphrase every time, while keeping MK encrypted
 
 ### 5.3 What is written to disk on the device
 Allowed: ciphertext blobs (cache), `enc_meta`, the SQLite index (ids, versions, dirty flags,
-cursor), Stronghold snapshot, settings. **Never**: plaintext files, decrypted metadata, MK, DEKs,
-passphrase, thumbnails in plaintext. Sharing/exporting a document to another app writes a
+cursor), Stronghold snapshot, settings, the app's own `config.json` (server URL, bearer token,
+auto-lock minutes — see `docs/ARCHITECTURE.md` §7; low-sensitivity per §6 above, written `0600` on
+Unix). **Never**: plaintext files, decrypted metadata, MK, DEKs, passphrase, thumbnails in
+plaintext. Sharing/exporting a document to another app writes a
 plaintext copy to the app's cache dir and deletes it as soon as the share sheet returns.
 
 ## 6. Server API token

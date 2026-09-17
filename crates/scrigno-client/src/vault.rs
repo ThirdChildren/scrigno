@@ -16,15 +16,20 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use secrecy::SecretString;
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 use scrigno_core::ids::{DocId, KeyslotId, VaultId};
 use scrigno_core::kdf::{KdfParams, derive_kek};
+#[cfg(test)]
+use scrigno_core::keys::Dek;
 use scrigno_core::keys::MasterKey;
 use scrigno_core::keyslot::{Keyslot, KeyslotKind};
 use scrigno_core::meta::DocMeta;
-use scrigno_core::{blob, meta, wrap};
+use scrigno_core::{blob, meta, recovery, wrap};
 
 use crate::error::{ClientError, Result};
 use crate::http::HttpClient;
@@ -97,18 +102,10 @@ impl Vault {
 
         let vault_id = VaultId::generate();
         let mk = MasterKey::generate()?;
-        let keyslot_id = KeyslotId::generate();
-        let kdf = KdfParams::generate_default()?;
-        let kek = derive_kek(passphrase, &kdf)?;
-        let wrapped_mk = wrap::wrap_mk(&kek, vault_id, keyslot_id, &mk)?;
+        let (keyslot_id, kdf, wrapped_mk, new_keyslot) =
+            build_new_keyslot(passphrase, vault_id, &mk, "passphrase")?;
 
         let http = HttpClient::new(server_url, token)?;
-        let new_keyslot = crate::wire::NewKeyslotWire {
-            id: keyslot_id.as_uuid(),
-            kind: "passphrase",
-            kdf: serde_json::to_value(&kdf).map_err(|_| ClientError::Crypto)?,
-            wrapped_mk: wrapped_mk.as_bytes().to_vec(),
-        };
         let response = http.create_vault(vault_id.as_uuid(), new_keyslot).await?;
         let server_slot = response
             .keyslots
@@ -277,6 +274,41 @@ fn unwrap_with_slot(
     Ok((keyslot, mk))
 }
 
+/// Builds a brand-new keyslot for `secret` (a passphrase or a recovery code — both are treated
+/// identically as raw Argon2id input, `docs/CRYPTO.md` §3): a fresh [`KeyslotId`], KDF params at
+/// the create-time floor ([`KdfParams::generate_default`]), and `mk` wrapped under the derived
+/// KEK ([`wrap::wrap_mk`]). Shared by [`Vault::create`]'s initial `passphrase` keyslot and
+/// [`UnlockedVault::add_recovery_keyslot`]'s `recovery` keyslot — the only difference between the
+/// two call sites is the input secret and the `kind` string, so both get identical treatment for
+/// everything else (KDF params policy, wrap AAD, wire shape).
+///
+/// Returns the pieces the two call sites need: the new slot's id/KDF params/wrapped key (to build
+/// a local [`Keyslot`] once the server has confirmed it), plus the ready-to-POST
+/// [`crate::wire::NewKeyslotWire`].
+fn build_new_keyslot(
+    secret: &SecretString,
+    vault_id: VaultId,
+    mk: &MasterKey,
+    kind: &'static str,
+) -> Result<(
+    KeyslotId,
+    KdfParams,
+    wrap::WrappedKey,
+    crate::wire::NewKeyslotWire,
+)> {
+    let keyslot_id = KeyslotId::generate();
+    let kdf = KdfParams::generate_default()?;
+    let kek = derive_kek(secret, &kdf)?;
+    let wrapped_mk = wrap::wrap_mk(&kek, vault_id, keyslot_id, mk)?;
+    let wire = crate::wire::NewKeyslotWire {
+        id: keyslot_id.as_uuid(),
+        kind,
+        kdf: serde_json::to_value(&kdf).map_err(|_| ClientError::Crypto)?,
+        wrapped_mk: wrapped_mk.as_bytes().to_vec(),
+    };
+    Ok((keyslot_id, kdf, wrapped_mk, wire))
+}
+
 fn persist_bootstrap(
     store: &Store,
     vault_id: VaultId,
@@ -357,6 +389,59 @@ pub(crate) fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
+/// Longest side, in pixels, of a generated thumbnail (`docs/CRYPTO.md` §4.3). Images already
+/// smaller than this in both dimensions are left at their original size (no upscaling).
+const THUMB_MAX_DIMENSION: u32 = 256;
+
+/// Hard cap on the base64-encoded thumbnail, matching `docs/CRYPTO.md` §4.3's "`thumb`: base64
+/// JPEG ≤ 24 KiB".
+const THUMB_MAX_BYTES: usize = 24 * 1024;
+
+/// JPEG quality levels tried, highest first, until the encoded size fits [`THUMB_MAX_BYTES`].
+/// At [`THUMB_MAX_DIMENSION`] = 256px, quality 70 already comfortably clears the cap for
+/// ordinary photos; the lower steps are a safety margin for busy/high-entropy images so the cap
+/// is met reliably rather than merely "usually".
+const THUMB_JPEG_QUALITIES: [u8; 4] = [70, 55, 40, 25];
+
+/// Best-effort thumbnail generation for `DocMeta.thumb` (`docs/CRYPTO.md` §4.3): decodes `bytes`
+/// as an image, downsizes it to at most [`THUMB_MAX_DIMENSION`] px on the longest side, and
+/// re-encodes as JPEG, trying progressively lower quality until the base64-encoded result fits
+/// [`THUMB_MAX_BYTES`].
+///
+/// Returns `None` (never an error) if `bytes` can't be decoded as an image despite the caller's
+/// `image/*` mime claim, or if no quality level in [`THUMB_JPEG_QUALITIES`] gets the encoded
+/// thumbnail under the cap — a document is never refused just because its thumbnail didn't pan
+/// out. Never logs the image bytes or anything derived from them (CLAUDE.md: never log content).
+fn generate_thumbnail(bytes: &[u8]) -> Option<String> {
+    let img = image::load_from_memory(bytes).ok()?;
+
+    let resized = if img.width() > THUMB_MAX_DIMENSION || img.height() > THUMB_MAX_DIMENSION {
+        img.resize(
+            THUMB_MAX_DIMENSION,
+            THUMB_MAX_DIMENSION,
+            image::imageops::FilterType::Lanczos3,
+        )
+    } else {
+        img
+    };
+    // JPEG has no alpha channel; drop it explicitly rather than let the encoder reject it.
+    let rgb = resized.to_rgb8();
+
+    for quality in THUMB_JPEG_QUALITIES {
+        let mut jpeg_bytes = Vec::new();
+        let jpeg_encoder =
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_bytes, quality);
+        if rgb.write_with_encoder(jpeg_encoder).is_err() {
+            continue;
+        }
+        let b64 = BASE64.encode(&jpeg_bytes);
+        if b64.len() <= THUMB_MAX_BYTES {
+            return Some(b64);
+        }
+    }
+    None
+}
+
 /// The user-editable `DocMeta` fields plus the local-only `keep_offline` flag, grouped into one
 /// struct so [`UnlockedVault::encrypt_new_document`] takes a reasonable number of arguments.
 pub(crate) struct NewDocFields {
@@ -401,10 +486,24 @@ impl<W: Write> Write for HashingWriter<W> {
 }
 
 impl UnlockedVault {
-    /// Zeroizes the master key (via [`MasterKey`]'s own `Drop`) and returns a locked [`Vault`]
-    /// over the same local store.
+    /// Zeroizes the master key (via [`MasterKey`]'s own `Drop`), scrubs the decrypted plaintext
+    /// (`title`/`tags`/`note`/`original_name`) held in `self.index` for the whole unlocked
+    /// session, and returns a locked [`Vault`] over the same local store.
+    ///
+    /// `self.index` is a plain, `ts-rs`-exported DTO ([`DocSummary`]) — deriving `Zeroize` on it
+    /// would tie a public serialization type to an internal memory-hygiene concern, so this
+    /// scrubs each entry's plaintext fields in place instead (`docs/CRYPTO.md §5.2`: auto-lock
+    /// exists to shrink the in-memory-plaintext window, not just drop the `Vec` and hope the
+    /// allocator zeroes it).
     #[must_use]
-    pub fn lock(self) -> Vault {
+    pub fn lock(mut self) -> Vault {
+        for doc in &mut self.index {
+            doc.title.zeroize();
+            doc.tags.zeroize();
+            doc.note.zeroize();
+            doc.original_name.zeroize();
+        }
+        self.index.clear();
         Vault { store: self.store }
     }
 
@@ -414,11 +513,56 @@ impl UnlockedVault {
         self.vault_id.as_uuid()
     }
 
+    /// Generates a brand-new recovery code ([`recovery::generate_code`]), wraps the already
+    /// in-memory master key under a KEK derived from it (same create-time KDF params policy as
+    /// the initial `passphrase` keyslot — both go through [`build_new_keyslot`]), and registers
+    /// the resulting `recovery` keyslot with the server (`POST /v1/vault/keyslots`).
+    ///
+    /// Returns the recovery code as plaintext — the **only** time it is ever available in
+    /// plaintext (`docs/CRYPTO.md` §3: "Stored nowhere in plaintext"). This method never logs or
+    /// persists it anywhere; the caller (the eventual Tauri command → UI, per `docs/ROADMAP.md`
+    /// M4's "recovery code shown once") is solely responsible for displaying it to the user
+    /// exactly once and never caching it.
+    ///
+    /// # Errors
+    /// [`ClientError::Crypto`] if code generation, KDF or wrapping fails (should not happen in
+    /// ordinary operation). [`ClientError::Network`] / [`ClientError::Unauthorized`] for
+    /// transport/auth failures registering the slot with the server.
+    pub async fn add_recovery_keyslot(&mut self) -> Result<String> {
+        let code = recovery::generate_code().map_err(|_| ClientError::Crypto)?;
+        let secret = SecretString::from(code.clone());
+        let (_keyslot_id, _kdf, _wrapped_mk, new_keyslot) =
+            build_new_keyslot(&secret, self.vault_id, &self.mk, "recovery")?;
+        self.http.add_keyslot(new_keyslot).await?;
+        Ok(code)
+    }
+
     /// The in-memory document index, rebuilt on unlock and kept up to date by every mutating
     /// method on this type. Excludes tombstoned (deleted) documents.
     #[must_use]
     pub fn list(&self) -> Vec<DocSummary> {
         self.index.clone()
+    }
+
+    /// Returns the full decrypted [`DocMeta`] for document `id`, including `thumb` — which
+    /// [`DocSummary`] (and thus [`Self::list`]) deliberately omits per
+    /// `docs/ARCHITECTURE.md §6` (the thumbnail is fetched separately, on demand). Re-opens and
+    /// decrypts `enc_meta` fresh from the store rather than from `self.index` (which only holds
+    /// `DocSummary`s, without `thumb`) — the same per-document step [`Vault::unlock`]'s index
+    /// rebuild performs for every document, just for this one id. Backs the Tauri layer's
+    /// `doc_get_meta` and `doc_thumb` commands.
+    ///
+    /// # Errors
+    /// [`ClientError::NotFound`] if `id` doesn't exist or is a tombstone.
+    pub fn get_meta(&self, id: Uuid) -> Result<DocMeta> {
+        let row = self.store.get_document(id)?.ok_or(ClientError::NotFound)?;
+        if row.deleted {
+            return Err(ClientError::NotFound);
+        }
+        let doc_id = DocId::from_uuid(row.id);
+        let doc_version = doc_version_of(&row);
+        let enc = meta::EncMeta::from_bytes(&row.enc_meta).map_err(|_| ClientError::Crypto)?;
+        Ok(meta::open(&self.mk, doc_id, doc_version, &enc)?)
     }
 
     /// Encrypts `reader`'s content as a brand-new document: streams it through
@@ -467,6 +611,19 @@ impl UnlockedVault {
     /// local (no `.await`s): the network side of "adding a document" only happens later, at the
     /// next `sync()`.
     ///
+    /// **Streaming vs. buffering.** For every mime except `image/*`, `reader` is streamed
+    /// through [`blob::Encryptor`] in one pass via `std::io::copy` and never buffered whole —
+    /// deliberate, for the 150 MiB-blob streaming-RSS budget (`docs/ROADMAP.md` M2). For
+    /// `image/*` mimes, `docs/CRYPTO.md` §4.3's `DocMeta.thumb` needs the fully decoded image,
+    /// and the `image` crate has no streaming decode API that also lets this method re-emit the
+    /// original bytes for encryption afterwards. So images only are a scoped, deliberate
+    /// exception: the whole `reader` is buffered into memory once (`read_to_end`), a thumbnail
+    /// is decoded from that buffer (best-effort — see [`generate_thumbnail`]), and then the same
+    /// buffer is fed through the identical encryption path via `io::Cursor`. This is bounded,
+    /// ordinary work: documents added this way are individual photos/scans (M5's acceptance
+    /// criterion is "12 MP photo, <5s end-to-end"), not the multi-hundred-MB blobs the streaming
+    /// design exists for.
+    ///
     /// # Errors
     /// [`ClientError::Storage`] on a local I/O failure. [`ClientError::Crypto`] if encryption
     /// itself fails (should not happen in ordinary operation).
@@ -493,7 +650,18 @@ impl UnlockedVault {
         let file = std::fs::File::create(&tmp_path)?;
         let hashing = HashingWriter::new(file);
         let mut enc = blob::Encryptor::new(hashing, &self.mk, doc_id)?;
-        std::io::copy(&mut reader, &mut enc)?;
+
+        let thumb = if mime.starts_with("image/") {
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf)?;
+            let thumb = generate_thumbnail(&buf);
+            std::io::copy(&mut std::io::Cursor::new(buf), &mut enc)?;
+            thumb
+        } else {
+            std::io::copy(&mut reader, &mut enc)?;
+            None
+        };
+
         let hashing = enc.finish()?;
         hashing.inner.sync_all()?;
         let plain_size = hashing.count;
@@ -513,7 +681,7 @@ impl UnlockedVault {
             content_hash,
             original_name,
             created_at: now_rfc3339(),
-            thumb: None,
+            thumb,
         };
         let enc_meta = meta::seal(&self.mk, doc_id, 1, &doc_meta)?;
 
@@ -574,8 +742,14 @@ impl UnlockedVault {
         Ok(())
     }
 
-    /// The configured cache size limit in MiB (`kv` key `cache_limit_mb`, default 512).
-    fn cache_limit_mb(&self) -> Result<i64> {
+    /// The configured local blob cache size limit in MiB (`kv` key `cache_limit_mb`, default
+    /// [`DEFAULT_CACHE_LIMIT_MB`]). Reflects whatever [`Self::set_cache_limit_mb`] last wrote,
+    /// or the default if that has never been called — backs the Tauri layer's `settings_get`
+    /// command (`docs/ARCHITECTURE.md §6`).
+    ///
+    /// # Errors
+    /// [`ClientError::Storage`] if the local database can't be read.
+    pub fn cache_limit_mb(&self) -> Result<i64> {
         Ok(self
             .store
             .kv_get(KV_CACHE_LIMIT_MB)?
@@ -776,5 +950,308 @@ impl UnlockedVault {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A directory under the OS temp dir, removed on drop — same pattern as `store.rs`'s test
+    /// module.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "scrigno-client-vaulttest-{label}-{}",
+                Uuid::now_v7()
+            ));
+            std::fs::create_dir_all(&path).expect("create temp dir");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Builds an `UnlockedVault` over a fresh local store without any network round trip —
+    /// `encrypt_new_document` is purely local, so no server/wiremock is needed to exercise it.
+    fn test_vault(label: &str) -> (TempDir, UnlockedVault) {
+        let dir = TempDir::new(label);
+        let store = Store::open(dir.path()).expect("open store");
+        let mk = MasterKey::generate().expect("generate master key");
+        let http = HttpClient::new(
+            "http://127.0.0.1:1",
+            SecretString::from("test-token".to_string()),
+        )
+        .expect("build http client");
+        let vault = UnlockedVault {
+            store,
+            vault_id: VaultId::generate(),
+            mk,
+            http,
+            index: Vec::new(),
+        };
+        (dir, vault)
+    }
+
+    /// A tiny solid-color PNG, generated with the `image` crate itself rather than a committed
+    /// fixture.
+    fn sample_png() -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(64, 64, image::Rgb([200, 80, 40]));
+        let mut buf = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .expect("encode sample png");
+        buf
+    }
+
+    #[test]
+    fn add_image_document_gets_a_thumbnail() {
+        let (_dir, mut vault) = test_vault("thumb-image");
+        let fields = NewDocFields {
+            title: "Foto".to_string(),
+            tags: vec![],
+            note: String::new(),
+            mime: "image/png".to_string(),
+            original_name: "foto.png".to_string(),
+            keep_offline: false,
+        };
+
+        let (_row, doc_meta) = vault
+            .encrypt_new_document(
+                DocId::generate(),
+                std::io::Cursor::new(sample_png()),
+                fields,
+            )
+            .expect("encrypt_new_document");
+
+        let thumb = doc_meta
+            .thumb
+            .expect("expected a thumbnail for an image/* mime");
+        assert!(
+            thumb.len() <= THUMB_MAX_BYTES,
+            "thumbnail base64 exceeds the 24 KiB cap: {} bytes",
+            thumb.len()
+        );
+        let jpeg_bytes = BASE64
+            .decode(thumb.as_bytes())
+            .expect("thumb is valid base64");
+        // Confirms the decoded bytes really are a JPEG, not just base64 noise.
+        image::load_from_memory_with_format(&jpeg_bytes, image::ImageFormat::Jpeg)
+            .expect("thumbnail bytes decode as JPEG");
+    }
+
+    #[test]
+    fn add_non_image_document_has_no_thumbnail() {
+        let (_dir, mut vault) = test_vault("thumb-non-image");
+        let fields = NewDocFields {
+            title: "Documento".to_string(),
+            tags: vec![],
+            note: String::new(),
+            mime: "application/pdf".to_string(),
+            original_name: "documento.pdf".to_string(),
+            keep_offline: false,
+        };
+
+        let (_row, doc_meta) = vault
+            .encrypt_new_document(
+                DocId::generate(),
+                std::io::Cursor::new(b"%PDF-1.4 not a real pdf".to_vec()),
+                fields,
+            )
+            .expect("encrypt_new_document");
+
+        assert_eq!(doc_meta.thumb, None);
+    }
+
+    #[test]
+    fn get_meta_returns_full_doc_meta_including_thumb() {
+        let (_dir, mut vault) = test_vault("get-meta-image");
+        let fields = NewDocFields {
+            title: "Foto".to_string(),
+            tags: vec!["vacanze".to_string()],
+            note: "una nota".to_string(),
+            mime: "image/png".to_string(),
+            original_name: "foto.png".to_string(),
+            keep_offline: false,
+        };
+        let doc_id = DocId::generate();
+        let (row, doc_meta) = vault
+            .encrypt_new_document(doc_id, std::io::Cursor::new(sample_png()), fields)
+            .expect("encrypt_new_document");
+
+        let fetched = vault
+            .get_meta(row.id)
+            .expect("get_meta should find the just-added document");
+
+        assert_eq!(fetched.title, doc_meta.title);
+        assert_eq!(fetched.tags, doc_meta.tags);
+        assert_eq!(fetched.note, doc_meta.note);
+        assert_eq!(fetched.mime, doc_meta.mime);
+        assert_eq!(fetched.size, doc_meta.size);
+        assert_eq!(fetched.content_hash, doc_meta.content_hash);
+        assert_eq!(fetched.original_name, doc_meta.original_name);
+        assert_eq!(fetched.created_at, doc_meta.created_at);
+        // The whole point of `get_meta` over `list()`/`DocSummary`: `thumb` survives.
+        assert!(
+            fetched.thumb.is_some(),
+            "expected a thumbnail to round-trip"
+        );
+        assert_eq!(fetched.thumb, doc_meta.thumb);
+    }
+
+    #[test]
+    fn get_meta_not_found_for_unknown_id() {
+        let (_dir, vault) = test_vault("get-meta-missing");
+        let err = vault
+            .get_meta(Uuid::now_v7())
+            .expect_err("unknown id should be NotFound");
+        assert!(matches!(err, ClientError::NotFound));
+    }
+
+    #[test]
+    fn cache_limit_mb_defaults_then_reflects_set_cache_limit_mb() {
+        let (_dir, mut vault) = test_vault("cache-limit");
+
+        let default = vault
+            .cache_limit_mb()
+            .expect("cache_limit_mb should read the default before any explicit set");
+        assert_eq!(default, DEFAULT_CACHE_LIMIT_MB);
+
+        vault
+            .set_cache_limit_mb(1024)
+            .expect("set_cache_limit_mb should succeed");
+        let updated = vault
+            .cache_limit_mb()
+            .expect("cache_limit_mb should read back the new value");
+        assert_eq!(updated, 1024);
+    }
+
+    /// Same as [`test_vault`], but pointed at `base_url` instead of an unreachable address —
+    /// needed by [`add_recovery_keyslot_round_trips_through_unlock`], which requires a real
+    /// (mocked) `/v1/vault/keyslots` endpoint to POST to.
+    fn test_vault_with_server(label: &str, base_url: &str) -> (TempDir, UnlockedVault) {
+        let dir = TempDir::new(label);
+        let store = Store::open(dir.path()).expect("open store");
+        let mk = MasterKey::generate().expect("generate master key");
+        let http = HttpClient::new(base_url, SecretString::from("test-token".to_string()))
+            .expect("build http client");
+        let vault = UnlockedVault {
+            store,
+            vault_id: VaultId::generate(),
+            mk,
+            http,
+            index: Vec::new(),
+        };
+        (dir, vault)
+    }
+
+    /// `add_recovery_keyslot` on an unlocked vault: (1) returns a plaintext code that is a
+    /// valid, parseable Crockford Base32 recovery code (`scrigno_core::recovery::parse_code`);
+    /// (2) actually POSTs a `recovery`-kind keyslot to `/v1/vault/keyslots` (mocked here with
+    /// `wiremock`, same style as the crate's `tests/sync.rs`); and (3) — the important
+    /// round-trip check — simulating an "unlock with the recovery code" against exactly what was
+    /// sent to the server (deriving a KEK from the returned code via the same KDF params, then
+    /// unwrapping the sent `wrapped_mk`) recovers the *same* master key bytes the vault was
+    /// created with.
+    #[tokio::test]
+    async fn add_recovery_keyslot_round_trips_through_unlock() {
+        use std::sync::{Arc, Mutex};
+
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let captured_for_mock = captured.clone();
+
+        let mock_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/vault/keyslots"))
+            .respond_with(move |req: &Request| {
+                let body: serde_json::Value =
+                    serde_json::from_slice(&req.body).expect("request body is valid JSON");
+                *captured_for_mock.lock().expect("lock captured body") = Some(body.clone());
+                ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                    "id": body["id"],
+                    "kind": body["kind"],
+                    "kdf": body["kdf"],
+                    "wrapped_mk": body["wrapped_mk"],
+                    "created_at": "2026-01-01T00:00:00Z",
+                }))
+            })
+            .mount(&mock_server)
+            .await;
+
+        let (_dir, mut vault) = test_vault_with_server("recovery-roundtrip", &mock_server.uri());
+        let vault_id = vault.vault_id;
+
+        let code = vault
+            .add_recovery_keyslot()
+            .await
+            .expect("add_recovery_keyslot should succeed against the mocked server");
+
+        // (1) The returned code must be a valid, parseable Crockford Base32 recovery code.
+        recovery::parse_code(&code)
+            .expect("returned code should be parseable by recovery::parse_code");
+
+        // (2) The server actually received a `recovery`-kind keyslot.
+        let sent = captured
+            .lock()
+            .expect("lock captured body")
+            .clone()
+            .expect("mock server should have received exactly one POST");
+        assert_eq!(sent["kind"], "recovery");
+
+        // (3) Round trip: re-derive the KEK from the plaintext code the same way an "unlock with
+        // recovery" flow would, and unwrap exactly the `wrapped_mk` that was sent to the server.
+        let kdf: KdfParams =
+            serde_json::from_value(sent["kdf"].clone()).expect("kdf field deserializes");
+        let wrapped_mk_bytes = BASE64
+            .decode(
+                sent["wrapped_mk"]
+                    .as_str()
+                    .expect("wrapped_mk is a base64 string"),
+            )
+            .expect("wrapped_mk decodes as base64");
+        let wrapped_mk =
+            wrap::WrappedKey::from_slice(&wrapped_mk_bytes).expect("wrapped_mk is well-formed");
+        let keyslot_id = KeyslotId::from_uuid(
+            Uuid::parse_str(sent["id"].as_str().expect("id is a string"))
+                .expect("id is a valid uuid"),
+        );
+
+        let recovery_secret = SecretString::from(code);
+        let kek = derive_kek(&recovery_secret, &kdf).expect("derive_kek from recovery code");
+        let recovered_mk = wrap::unwrap_mk(&kek, vault_id, keyslot_id, &wrapped_mk)
+            .expect("unwrap_mk with the recovery-derived KEK should succeed");
+
+        // `MasterKey` exposes no public accessor for its raw bytes outside `scrigno-core`
+        // (docs/CRYPTO.md §9), so "same master key" is checked via AEAD authentication instead:
+        // a fresh DEK wrapped under the vault's *real* master key only unwraps successfully
+        // under `recovered_mk` if its bytes are identical to the original.
+        let doc_id = DocId::generate();
+        let probe_dek = Dek::generate().expect("generate probe dek");
+        let wrapped_dek =
+            wrap::wrap_dek(&vault.mk, doc_id, &probe_dek).expect("wrap probe dek under real mk");
+        wrap::unwrap_dek(&recovered_mk, doc_id, &wrapped_dek).expect(
+            "recovery-derived master key should unwrap data wrapped under the real master key",
+        );
+
+        // Negative control: an unrelated master key must NOT unwrap the same envelope — proves
+        // the assertion above is actually exercising key equality, not vacuously passing.
+        let unrelated_mk = MasterKey::generate().expect("generate unrelated mk");
+        assert!(
+            wrap::unwrap_dek(&unrelated_mk, doc_id, &wrapped_dek).is_err(),
+            "an unrelated master key should not unwrap the probe envelope"
+        );
     }
 }

@@ -33,6 +33,10 @@ base64 = { workspace = true }
 # blake3: client-side plaintext content hash stored in DocMeta.content_hash
 # (docs/CRYPTO.md §4.3); already a workspace dep for scrigno-core's own use.
 blake3 = { workspace = true }
+# zeroize: scrub UnlockedVault::index's decrypted DocSummary strings (title/tags/note/
+# original_name) on lock() — auto-lock (docs/CRYPTO.md §5.2) must shrink the in-memory-plaintext
+# window, not just drop it unzeroized; already a workspace dep for scrigno-core's own use.
+zeroize = { workspace = true }
 # futures-util: drains reqwest's streamed request/response bodies one chunk at a time while
 # hashing (blob upload/download), without ever buffering the whole blob in memory. Same
 # dependency/justification scrigno-server already uses for the mirror-image server-side code
@@ -43,6 +47,12 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # RFC3339 formatting for free from sqlx's chrono feature, but scrigno-client has no chrono
 # dependency of its own, so this crate needs its own minimal formatter.
 time = { version = "0.3", default-features = false, features = ["formatting"] }
+# image: on-device thumbnail generation for `DocMeta.thumb` (docs/CRYPTO.md §4.3, M4 per
+# docs/ROADMAP.md) — decode a user's photo/scan and re-encode a small JPEG. Ordinary image
+# codec library, not a crypto primitive, standard choice for this in the Rust ecosystem.
+# Default features off (skips avif/exr/rayon and their heavier transitive deps this crate never
+# needs); only the codecs a phone/desktop user's photos realistically use are enabled.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 
 [features]
 ts-export = ["dep:ts-rs"]

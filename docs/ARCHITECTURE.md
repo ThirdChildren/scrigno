@@ -189,6 +189,7 @@ All commands are thin: parse args → call `scrigno-client` → map errors to `A
 | `vault_unlock` | `passphrase` | `()` | |
 | `vault_unlock_quick` | — | `()` | biometric / device store; `Err(code="quick_unlock_unavailable")` on desktop |
 | `vault_lock` | — | `()` | zeroizes MK |
+| `vault_add_recovery_code` | — | `String` | new recovery keyslot; return value is the plaintext code, **shown once**, never cached/re-fetchable/logged |
 | `docs_list` | — | `DocSummary[]` | decrypted meta minus `thumb` |
 | `doc_thumb` | `id` | binary | JPEG bytes from meta, or empty |
 | `doc_get_meta` | `id` | `DocMeta` | |
@@ -213,6 +214,14 @@ Server (env, all prefixed `SCRIGNO_`): `DATABASE_URL`, `API_TOKEN` (required, re
 if shorter than 32 characters), `BLOB_DIR`, `BIND` (default `0.0.0.0:8787`), `MAX_BLOB_BYTES`
 (default 200 MiB), `GC_INTERVAL_SECS` (default 3600). Plus `RUST_LOG`.
 
-Client/app: `server_url` and `token` entered once in the setup screen, stored in the SQLite `kv`
-table (token) and Stronghold (MK). Dev defaults suggested by the UI: `http://127.0.0.1:8787` on
-desktop, `http://10.0.2.2:8787` on the Android emulator.
+Client/app: `server_url` and `token` entered once in the setup screen. As of M4, `scrigno-client`'s
+own SQLite `kv` store deliberately never persists the token (each caller re-supplies it — a
+decision made for `scrigno-cli`'s stateless-invocation model in M3 and kept for the desktop app
+rather than reopened mid-milestone); the Tauri app instead persists `{server_url, token,
+auto_lock_minutes}` in its own plaintext `<app_data_dir>/config.json` (`apps/mobile/src-tauri/src/
+config.rs`), written with `0600` permissions on Unix. This is the same sensitivity class
+`docs/CRYPTO.md` §6 already assigns the token ("if it leaks, an attacker can delete or add
+ciphertext but cannot read anything"). MK persistence via Stronghold is M5 (quick unlock); M4 has
+no quick unlock, so MK is never written to disk at all — re-derived from the passphrase on every
+`vault_unlock`. Dev defaults suggested by the UI: `http://127.0.0.1:8787` on desktop,
+`http://10.0.2.2:8787` on the Android emulator.

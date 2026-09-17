@@ -1,0 +1,140 @@
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { it } from "../i18n/it";
+import { errorMessage } from "../i18n/errors";
+import { settingsGet, settingsSet, vaultAddRecoveryCode, vaultLock } from "../lib/ipc";
+import { RecoveryCodeReveal } from "../components/RecoveryCodeReveal";
+import pkg from "../../package.json";
+
+/** Settings screen (`docs/ROADMAP.md` M4). "Cambia passphrase" is a documented stub this
+ * milestone — no client capability exists yet for it (see this milestone's report). */
+export function Settings({ onBack }: { onBack: () => void }) {
+  const queryClient = useQueryClient();
+  const settingsQuery = useQuery({ queryKey: ["settings"], queryFn: settingsGet });
+  const [autoLockMinutes, setAutoLockMinutes] = useState(5);
+  const [cacheLimitMb, setCacheLimitMb] = useState(512);
+  const [recoveryCode, setRecoveryCode] = useState<string | null>(null);
+
+  // "Adjusting state when a prop changes" (react.dev), done during render rather than in an
+  // effect: initializes the editable fields from the fetched settings exactly once per fetch,
+  // without an extra render/effect round-trip.
+  const [loadedSettings, setLoadedSettings] = useState(settingsQuery.data);
+  if (settingsQuery.data && settingsQuery.data !== loadedSettings) {
+    setLoadedSettings(settingsQuery.data);
+    setAutoLockMinutes(settingsQuery.data.auto_lock_minutes);
+    setCacheLimitMb(Number(settingsQuery.data.cache_limit_mb));
+  }
+
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      settingsSet({
+        auto_lock_minutes: autoLockMinutes,
+        cache_limit_mb: BigInt(cacheLimitMb),
+        server_url: settingsQuery.data?.server_url ?? "",
+      }),
+    onSuccess: (data) => queryClient.setQueryData(["settings"], data),
+  });
+
+  const recoveryMutation = useMutation({
+    mutationFn: vaultAddRecoveryCode,
+    onSuccess: setRecoveryCode,
+  });
+
+  const lockMutation = useMutation({
+    mutationFn: vaultLock,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["vaultStatus"] }),
+  });
+
+  if (recoveryCode) {
+    return <RecoveryCodeReveal code={recoveryCode} onContinue={() => setRecoveryCode(null)} />;
+  }
+
+  return (
+    <main className="flex min-h-screen flex-col gap-5 bg-neutral-950 p-4 pb-[env(safe-area-inset-bottom)] text-neutral-100">
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={onBack}
+          className="min-h-11 min-w-11 rounded-md border border-neutral-700 px-3"
+        >
+          {it.common.back}
+        </button>
+        <h1 className="text-lg font-semibold">{it.settings.heading}</h1>
+      </div>
+
+      {settingsQuery.data && (
+        <p className="text-sm text-neutral-500">
+          {it.settings.serverUrl}: {settingsQuery.data.server_url}
+        </p>
+      )}
+
+      <label className="flex flex-col gap-1 text-sm text-neutral-300">
+        {it.settings.autoLockMinutes}
+        <input
+          type="number"
+          min={1}
+          max={30}
+          value={autoLockMinutes}
+          onChange={(e) => setAutoLockMinutes(Number(e.target.value))}
+          onBlur={() => saveMutation.mutate()}
+          className="min-h-11 rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2"
+        />
+      </label>
+
+      <label className="flex flex-col gap-1 text-sm text-neutral-300">
+        {it.settings.cacheLimitMb}
+        <input
+          type="number"
+          min={1}
+          value={cacheLimitMb}
+          onChange={(e) => setCacheLimitMb(Number(e.target.value))}
+          onBlur={() => saveMutation.mutate()}
+          className="min-h-11 rounded-md border border-neutral-700 bg-neutral-900 px-3 py-2"
+        />
+      </label>
+
+      {saveMutation.isError && (
+        <p role="alert" className="text-sm text-red-400">
+          {errorMessage(saveMutation.error)}
+        </p>
+      )}
+
+      <button
+        type="button"
+        onClick={() => recoveryMutation.mutate()}
+        disabled={recoveryMutation.isPending}
+        className="min-h-11 rounded-md border border-neutral-700 px-4 py-3 disabled:opacity-40"
+      >
+        {it.settings.addRecoveryCode}
+      </button>
+      {recoveryMutation.isError && (
+        <p role="alert" className="text-sm text-red-400">
+          {errorMessage(recoveryMutation.error)}
+        </p>
+      )}
+
+      <button
+        type="button"
+        disabled
+        title={it.common.comingSoon}
+        className="min-h-11 rounded-md border border-neutral-800 px-4 py-3 text-neutral-600"
+      >
+        {it.settings.changePassphrase}
+      </button>
+
+      <button
+        type="button"
+        onClick={() => lockMutation.mutate()}
+        className="min-h-11 rounded-md bg-red-700 px-4 py-3 font-medium text-white"
+      >
+        {it.settings.lockNow}
+      </button>
+
+      <section className="mt-auto text-xs text-neutral-500">
+        <h2 className="font-semibold text-neutral-400">{it.settings.about}</h2>
+        <p>{it.appName}</p>
+        <p>{it.settings.aboutVersion(pkg.version)}</p>
+      </section>
+    </main>
+  );
+}
